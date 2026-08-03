@@ -59,6 +59,45 @@ describe('Asteria store', () => {
     store.close();
   });
 
+  it('seeds the personal channel owner and channel from environment on first run', async () => {
+    const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'asteria-store-'));
+    const databasePath = path.join(tempDir, 'asteria.sqlite');
+    createdPaths.push(databasePath);
+
+    const store = await createStore(databasePath, {
+      ownerId: 'UOWNER',
+      channelId: 'C123',
+    });
+    const settings = store.getSettings();
+
+    assert.equal(settings.personal_channel_owner_id, 'UOWNER');
+    assert.equal(settings.personal_channel_id, 'C123');
+    store.close();
+  });
+
+  it('does not overwrite existing owner or channel with environment values', async () => {
+    const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'asteria-store-'));
+    const databasePath = path.join(tempDir, 'asteria.sqlite');
+    createdPaths.push(databasePath);
+
+    let store = await createStore(databasePath, {
+      ownerId: 'UOWNER',
+      channelId: 'C123',
+    });
+    store.updateSettings({ personal_channel_id: 'CRUNTIME' });
+    store.close();
+
+    store = await createStore(databasePath, {
+      ownerId: 'UOTHER',
+      channelId: 'COTHER',
+    });
+    const settings = store.getSettings();
+
+    assert.equal(settings.personal_channel_owner_id, 'UOWNER');
+    assert.equal(settings.personal_channel_id, 'CRUNTIME');
+    store.close();
+  });
+
   it('prevents duplicate scheduled job claims for the same day', async () => {
     const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'asteria-store-'));
     const databasePath = path.join(tempDir, 'asteria.sqlite');

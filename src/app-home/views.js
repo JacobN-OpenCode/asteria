@@ -37,8 +37,8 @@ function buildTabs(activeTab) {
         type: 'plain_text',
         text: tab.label,
       },
-      style: tab.id === activeTab ? 'primary' : 'secondary',
       value: tab.id,
+      ...(tab.id === activeTab ? { style: 'primary' } : {}),
     })),
   };
 }
