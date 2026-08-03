@@ -1,4 +1,3 @@
-import { buildUserGroupOptions } from '../services/slack.js';
 import { contentToMrkdwn } from '../utils/messages.js';
 import { getDefaultQuestionTopics, normalizeTimeValue } from '../utils/time.js';
 
@@ -568,10 +567,7 @@ function buildWelcomerView({ settings, notice }) {
   };
 }
 
-function buildSettingsView({ settings, notice, userGroups }) {
-  const currentUserGroupOptions = buildUserGroupOptions(userGroups, settings.daily_update_ping_user_group_id);
-  const userGroupsTruncated = userGroups.length > 100;
-
+function buildSettingsView({ settings, notice }) {
   return {
     type: 'home',
     callback_id: 'asteria_home_settings',
@@ -671,56 +667,24 @@ function buildSettingsView({ settings, notice, userGroups }) {
         },
       },
       {
-        type: 'input',
-        block_id: 'daily_update_ping_group_block',
-        label: { type: 'plain_text', text: 'Daily Update ping group' },
-        element: {
-          type: 'static_select',
-          action_id: 'daily_update_ping_user_group_id',
-          placeholder: {
+        type: 'section',
+        text: {
+          type: 'mrkdwn',
+          text: `*Daily Update ping group*\n${
+            settings.daily_update_ping_user_group_id
+              ? `<!subteam^${settings.daily_update_ping_user_group_id}>`
+              : '_not set_'
+          }`,
+        },
+        accessory: {
+          type: 'button',
+          action_id: 'open_ping_group_modal',
+          text: {
             type: 'plain_text',
-            text: 'Choose a Slack user group',
+            text: 'Change group',
           },
-          options:
-            currentUserGroupOptions.length > 0
-              ? currentUserGroupOptions.map((option) => ({
-                  text: option.text,
-                  value: option.value,
-                }))
-              : [
-                  {
-                    text: {
-                      type: 'plain_text',
-                      text: settings.daily_update_ping_user_group_id || 'No user groups loaded',
-                    },
-                    value: settings.daily_update_ping_user_group_id || '',
-                  },
-                ],
-          initial_option: currentUserGroupOptions.find(
-            (option) => option.value === settings.daily_update_ping_user_group_id,
-          )
-            ? {
-                text: currentUserGroupOptions.find(
-                  (option) => option.value === settings.daily_update_ping_user_group_id,
-                ).text,
-                value: settings.daily_update_ping_user_group_id,
-              }
-            : undefined,
         },
       },
-      ...(userGroupsTruncated
-        ? [
-            {
-              type: 'context',
-              elements: [
-                {
-                  type: 'mrkdwn',
-                  text: 'Slack limits the group list to 100 options; your selected group is always shown.',
-                },
-              ],
-            },
-          ]
-        : []),
       {
         type: 'section',
         text: {
@@ -744,7 +708,7 @@ function buildSettingsView({ settings, notice, userGroups }) {
   };
 }
 
-export function buildHomeView({ tab, settings, draft, questionPreview, recentQuestions, notice, userGroups, isOwner }) {
+export function buildHomeView({ tab, settings, draft, questionPreview, recentQuestions, notice, isOwner }) {
   if (!isOwner) {
     return buildReadOnlyView(settings);
   }
@@ -762,11 +726,7 @@ export function buildHomeView({ tab, settings, draft, questionPreview, recentQue
   }
 
   if (tab === 'settings') {
-    return buildSettingsView({
-      settings,
-      notice,
-      userGroups: userGroups || [],
-    });
+    return buildSettingsView({ settings, notice });
   }
 
   return buildDailyUpdateView({ settings, draft, questionPreview, notice });

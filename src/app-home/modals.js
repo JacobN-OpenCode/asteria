@@ -133,6 +133,49 @@ export function buildWelcomeMessageModal({ settings }) {
   };
 }
 
+export function buildPingGroupModal({ selectedGroup = null }) {
+  return {
+    type: 'modal',
+    callback_id: 'edit_ping_group_submit',
+    title: { type: 'plain_text', text: 'Daily Update ping group' },
+    submit: { type: 'plain_text', text: 'Save' },
+    close: { type: 'plain_text', text: 'Cancel' },
+    blocks: [
+      {
+        type: 'input',
+        block_id: 'ping_group_block',
+        label: { type: 'plain_text', text: 'Ping group' },
+        element: {
+          type: 'external_select',
+          action_id: 'select_ping_user_group',
+          min_query_length: 1,
+          placeholder: {
+            type: 'plain_text',
+            text: 'Start typing a user group name or handle',
+          },
+          ...(selectedGroup
+            ? {
+                initial_option: {
+                  text: { type: 'plain_text', text: selectedGroup.label },
+                  value: selectedGroup.id,
+                },
+              }
+            : {}),
+        },
+      },
+      {
+        type: 'context',
+        elements: [
+          {
+            type: 'mrkdwn',
+            text: 'Search for the group by name or handle, then pick it from the list.',
+          },
+        ],
+      },
+    ],
+  };
+}
+
 export function buildPersonalChannelModal({ settings }) {
   return {
     type: 'modal',

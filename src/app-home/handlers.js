@@ -4,6 +4,7 @@ import { getLocalDateKey, isValidTimeZone, normalizeTimeValue } from '../utils/t
 import {
   buildDailyUpdateModal,
   buildPersonalChannelModal,
+  buildPingGroupModal,
   buildThreadMessageModal,
   buildWelcomeMessageModal,
 } from './modals.js';
@@ -14,7 +15,11 @@ function getInputValue(viewState, blockId, actionId) {
 }
 
 function getRichTextInputValue(viewState, blockId, actionId) {
-  return viewState?.[blockId]?.[actionId]?.value ?? '';
+  const stateValue = viewState?.[blockId]?.[actionId];
+  if (stateValue?.rich_text_value) {
+    return JSON.stringify(stateValue.rich_text_value.elements ?? []);
+  }
+  return stateValue?.value ?? '';
 }
 
 function getCheckboxEnabled(viewState, blockId, actionId) {
@@ -51,7 +56,6 @@ export function createHomeHandlers({ app, store }) {
   async function publishTab(client, userId, tab, notice = '') {
     const settings = store.getSettings();
     const draft = store.getDraft();
-    const userGroups = await fetchUserGroups(client);
     const recentQuestions = store.getRecentDailyQuestionTexts(5);
     const lastQuestion = store.getLastDailyQuestion();
     const questionPreview =
@@ -69,7 +73,6 @@ export function createHomeHandlers({ app, store }) {
         questionPreview,
         recentQuestions,
         notice,
-        userGroups,
         isOwner: userId === settings.personal_channel_owner_id,
       }),
     );
@@ -120,6 +123,61 @@ export function createHomeHandlers({ app, store }) {
     }
 
     await openModal(client, body.trigger_id, buildPersonalChannelModal({ settings: store.getSettings() }));
+  }
+
+  async function handleOpenPingGroupModal({ ack, body, client }) {
+    await ack();
+    if (!isOwner(body.user.id)) {
+      return;
+    }
+
+    const settings = store.getSettings();
+    const groups = await fetchUserGroups(client);
+    const selectedGroup = groups.find((group) => group.id === settings.daily_update_ping_user_group_id);
+    await openModal(
+      client,
+      body.trigger_id,
+      buildPingGroupModal({
+        selectedGroup: selectedGroup
+          ? {
+              id: selectedGroup.id,
+              label: selectedGroup.handle ? `@${selectedGroup.handle}` : selectedGroup.name,
+            }
+          : null,
+      }),
+    );
+  }
+
+  async function handlePingGroupOptions({ ack, payload, client }) {
+    const query = (payload.value || '').trim().toLowerCase();
+    const groups = await fetchUserGroups(client, { forceRefresh: true });
+    const matches = groups.filter((group) =>
+      `${group.name} ${group.handle} ${group.description}`.toLowerCase().includes(query),
+    );
+
+    await ack({
+      options: matches.slice(0, 100).map((group) => ({
+        text: {
+          type: 'plain_text',
+          text: group.handle ? `@${group.handle}` : group.name,
+        },
+        value: group.id,
+      })),
+    });
+  }
+
+  async function handleEditPingGroupSubmit({ ack, body, view, client }) {
+    await ack();
+    if (!isOwner(body.user.id)) {
+      return;
+    }
+
+    const viewState = view.state.values;
+    store.updateSettings({
+      daily_update_ping_user_group_id: getStaticSelectValue(viewState, 'ping_group_block', 'select_ping_user_group'),
+    });
+
+    await publishTab(client, body.user.id, 'settings', ':white_check_mark: Ping group saved.');
   }
 
   async function handleComposeDailyUpdateSubmit({ ack, body, view, client }) {
@@ -353,11 +411,6 @@ export function createHomeHandlers({ app, store }) {
       getInputValue(viewState, 'daily_update_reminder_time_block', 'daily_update_reminder_time'),
       settings.daily_update_reminder_time,
     );
-    const pingGroupId = getStaticSelectValue(
-      viewState,
-      'daily_update_ping_group_block',
-      'daily_update_ping_user_group_id',
-    );
 
     if (!isValidTimeZone(timezone)) {
       await publishTab(
@@ -377,7 +430,6 @@ export function createHomeHandlers({ app, store }) {
         'daily_update_reminder_enabled',
       ),
       daily_update_reminder_time: reminderTime,
-      daily_update_ping_user_group_id: pingGroupId,
     });
 
     await publishTab(client, body.user.id, 'settings', ':white_check_mark: General settings saved.');
@@ -437,6 +489,8 @@ export function createHomeHandlers({ app, store }) {
   app.action('open_thread_message_modal', handleOpenThreadMessageModal);
   app.action('open_welcome_message_modal', handleOpenWelcomeMessageModal);
   app.action('open_personal_channel_modal', handleOpenPersonalChannelModal);
+  app.action('open_ping_group_modal', handleOpenPingGroupModal);
+  app.options('select_ping_user_group', handlePingGroupOptions);
   app.action('send_daily_update', handleSendDailyUpdate);
   app.action('save_daily_question_settings', handleSaveDailyQuestionSettings);
   app.action('save_welcomer_settings', handleSaveWelcomerSettings);
@@ -445,6 +499,7 @@ export function createHomeHandlers({ app, store }) {
   app.view('edit_thread_message_submit', handleEditThreadMessageSubmit);
   app.view('edit_welcome_message_submit', handleEditWelcomeMessageSubmit);
   app.view('edit_personal_channel_submit', handleEditPersonalChannelSubmit);
+  app.view('edit_ping_group_submit', handleEditPingGroupSubmit);
   app.event('app_home_opened', handleAppHomeOpened);
   app.event('member_joined_channel', handleMemberJoinedChannel);
 

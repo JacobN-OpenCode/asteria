@@ -24,6 +24,9 @@ function createHandlerTestHarness({ store }) {
     view: (callbackId, handler) => {
       handlers[`view:${callbackId}`] = handler;
     },
+    options: (actionId, handler) => {
+      handlers[`options:${actionId}`] = handler;
+    },
     event: (eventName, handler) => {
       handlers[`event:${eventName}`] = handler;
     },
@@ -238,7 +241,12 @@ describe('App Home handlers', () => {
       view: {
         state: {
           values: {
-            daily_update_main_block: { daily_update_main_text: { value: richTextValue } },
+            daily_update_main_block: {
+              daily_update_main_text: {
+                type: 'rich_text_input',
+                rich_text_value: { type: 'rich_text', elements: JSON.parse(richTextValue) },
+              },
+            },
             daily_update_song_block: { daily_update_song_text: { value: 'Song' } },
             daily_update_event_block: { daily_update_event_text: { value: 'Event' } },
           },
@@ -279,7 +287,12 @@ describe('App Home handlers', () => {
       view: {
         state: {
           values: {
-            thread_message_block: { thread_message_content: { value: richTextValue } },
+            thread_message_block: {
+              thread_message_content: {
+                type: 'rich_text_input',
+                rich_text_value: { type: 'rich_text', elements: JSON.parse(richTextValue) },
+              },
+            },
           },
         },
       },
@@ -314,7 +327,12 @@ describe('App Home handlers', () => {
       view: {
         state: {
           values: {
-            welcome_message_block: { welcome_message_content: { value: richTextValue } },
+            welcome_message_block: {
+              welcome_message_content: {
+                type: 'rich_text_input',
+                rich_text_value: { type: 'rich_text', elements: JSON.parse(richTextValue) },
+              },
+            },
           },
         },
       },
@@ -353,7 +371,7 @@ describe('App Home handlers', () => {
     store.close();
   });
 
-  it('does not embed a conversations_select in the Settings home view', async () => {
+  it('keeps selects out of the Settings home view and uses modal buttons instead', async () => {
     const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'asteria-apphome-'));
     const databasePath = path.join(tempDir, 'asteria.sqlite');
     createdPaths.push(databasePath);
@@ -370,8 +388,104 @@ describe('App Home handlers', () => {
     await handlers.publishTab(client, 'UOWNER', 'settings');
 
     const publishArgs = client.views.publish.mock.calls[0].arguments[0];
-    assert(!JSON.stringify(publishArgs.view).includes('conversations_select'));
+    const viewJson = JSON.stringify(publishArgs.view);
+    assert(!viewJson.includes('conversations_select'));
+    assert(!viewJson.includes('static_select'));
     assert(publishArgs.view.blocks.some((block) => block.accessory?.action_id === 'open_personal_channel_modal'));
+    assert(publishArgs.view.blocks.some((block) => block.accessory?.action_id === 'open_ping_group_modal'));
+    store.close();
+  });
+
+  it('opens the ping group modal with the current group preselected', async () => {
+    const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'asteria-apphome-'));
+    const databasePath = path.join(tempDir, 'asteria.sqlite');
+    createdPaths.push(databasePath);
+
+    const store = await createStore(databasePath);
+    store.updateSettings({
+      personal_channel_owner_id: 'UOWNER',
+      daily_update_ping_user_group_id: 'S123',
+    });
+
+    const client = createClient();
+    client.usergroups.list = mock.fn(async () => ({
+      usergroups: [{ id: 'S123', name: 'Members', handle: 'members' }],
+    }));
+
+    const handlers = createHandlerTestHarness({ store });
+
+    await handlers['action:open_ping_group_modal']({
+      ack: mock.fn(),
+      body: { user: { id: 'UOWNER' }, trigger_id: 'trig-2' },
+      client,
+    });
+
+    const callArgs = client.views.open.mock.calls[0].arguments[0];
+    assert.equal(callArgs.view.callback_id, 'edit_ping_group_submit');
+    const select = callArgs.view.blocks.find((block) => block.element?.type === 'external_select');
+    assert(select);
+    assert.equal(select.element.initial_option.value, 'S123');
+    store.close();
+  });
+
+  it('returns matching user group options for the searchable select', async () => {
+    const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'asteria-apphome-'));
+    const databasePath = path.join(tempDir, 'asteria.sqlite');
+    createdPaths.push(databasePath);
+
+    const store = await createStore(databasePath);
+    store.updateSettings({ personal_channel_owner_id: 'UOWNER' });
+
+    const client = createClient();
+    client.usergroups.list = mock.fn(async () => ({
+      usergroups: [
+        { id: 'S111', name: 'Hack Clubbers', handle: 'clubbers' },
+        { id: 'S222', name: 'Leads', handle: 'leads' },
+      ],
+    }));
+
+    const handlers = createHandlerTestHarness({ store });
+    let ackedOptions = null;
+    await handlers['options:select_ping_user_group']({
+      ack: (options) => {
+        ackedOptions = options;
+      },
+      payload: { value: 'leads' },
+      client,
+    });
+
+    assert.equal(ackedOptions.options.length, 1);
+    assert.equal(ackedOptions.options[0].value, 'S222');
+    store.close();
+  });
+
+  it('saves the ping group from the modal', async () => {
+    const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'asteria-apphome-'));
+    const databasePath = path.join(tempDir, 'asteria.sqlite');
+    createdPaths.push(databasePath);
+
+    const store = await createStore(databasePath);
+    store.updateSettings({ personal_channel_owner_id: 'UOWNER' });
+
+    const client = createClient();
+    const handlers = createHandlerTestHarness({ store });
+
+    await handlers['view:edit_ping_group_submit']({
+      ack: mock.fn(),
+      body: { user: { id: 'UOWNER' } },
+      view: {
+        state: {
+          values: {
+            ping_group_block: {
+              select_ping_user_group: { type: 'external_select', selected_option: { value: 'S999' } },
+            },
+          },
+        },
+      },
+      client,
+    });
+
+    assert.equal(store.getSettings().daily_update_ping_user_group_id, 'S999');
     store.close();
   });
 });
