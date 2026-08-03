@@ -74,17 +74,21 @@ export function createHackClubAiService({ apiKey, baseUrl, model, logger }) {
   }
 
   return {
-    async generateDailyQuestion({ topics, tone, customInstructions, recentQuestions }) {
+    async generateDailyQuestion({ topics, tone, customInstructions, recentQuestions, botName = 'Asteria' }) {
       const recentList = Array.isArray(recentQuestions) ? recentQuestions.slice(0, 8) : [];
+      const recentListText =
+        recentList.length > 0
+          ? `Avoid repeating these recent questions:\n${recentList.map((question) => `- ${question}`).join('\n')}`
+          : '';
       const prompt = [
-        'You are Asteria, a Slack companion bot for a Hack Club personal channel.',
+        `You are ${safeTrim(botName) || 'Asteria'}, a Slack companion bot for a Hack Club personal channel.`,
         'Write exactly one friendly, safe, community-appropriate question.',
         'Return only the question text with no bullets, no numbering, no markdown fence, and no preamble.',
         'The question should fit a general Hack Club/community setting and should not be overly personal, discriminatory, dangerous, or repetitive.',
         `Tone: ${safeTrim(tone) || 'friendly and curious'}.`,
         `Topics: ${(topics || []).filter(Boolean).join(', ') || 'general community conversation'}.`,
         customInstructions ? `Custom instructions: ${safeTrim(customInstructions)}` : '',
-        recentList.length > 0 ? `Avoid repeating these recent questions: ${recentList.join(' || ')}` : '',
+        recentListText,
       ]
         .filter(Boolean)
         .join('\n');

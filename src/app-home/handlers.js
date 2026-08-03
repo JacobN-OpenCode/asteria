@@ -401,6 +401,7 @@ export function createHomeHandlers({ app, store, aiService }) {
         tone: settings.daily_question_tone,
         customInstructions: settings.daily_question_custom_instructions,
         recentQuestions,
+        botName: settings.bot_display_name,
       });
       const response = await sendDailyQuestion(client, settings, aiResult.questionText);
       store.recordDailyQuestion({

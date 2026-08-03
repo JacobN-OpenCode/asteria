@@ -60,6 +60,7 @@ export function createScheduler({ store, aiService, client, logger, environment 
         tone: settings.daily_question_tone,
         customInstructions: settings.daily_question_custom_instructions,
         recentQuestions,
+        botName: settings.bot_display_name,
       });
 
       const shouldPostSeparately = !settings.daily_question_include_in_daily_update;

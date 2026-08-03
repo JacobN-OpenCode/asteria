@@ -11,8 +11,10 @@ describe('Hack Club AI integration', () => {
 
       const requestBody = JSON.parse(options.body);
       assert.equal(requestBody.model, 'qwen/qwen3-32b');
+      assert(requestBody.messages[1].content.includes('You are TestBot, a Slack companion bot'));
       assert(requestBody.messages[1].content.includes('Topics: fun, music'));
-      assert(requestBody.messages[1].content.includes('Avoid repeating these recent questions'));
+      assert(requestBody.messages[1].content.includes('Avoid repeating these recent questions:'));
+      assert(requestBody.messages[1].content.includes('- What is your favorite snack?'));
 
       return new Response(
         JSON.stringify({
@@ -45,6 +47,7 @@ describe('Hack Club AI integration', () => {
         tone: 'friendly',
         customInstructions: 'Keep it short',
         recentQuestions: ['What is your favorite snack?'],
+        botName: 'TestBot',
       });
 
       assert.equal(result.questionText, 'What is one thing you are excited to build next?');
