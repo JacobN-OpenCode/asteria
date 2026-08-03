@@ -20,10 +20,13 @@
   "oauth_config": {
     "scopes": {
       "bot": [
+        "channels:read",
         "chat:write",
         "chat:write.customize",
+        "groups:read",
         "im:write",
-        "usergroups:read"
+        "usergroups:read",
+        "users.profile:read"
       ]
     }
   },

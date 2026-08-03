@@ -6,9 +6,14 @@ import {
 } from '../utils/messages.js';
 
 const USER_GROUP_CACHE_TTL_MS = 5 * 60 * 1000;
+const OWNER_PROFILE_CACHE_TTL_MS = 5 * 60 * 1000;
 
 let cachedUserGroups = [];
 let cachedUserGroupsAt = 0;
+
+let cachedOwnerIdentity = null;
+let cachedOwnerIdentityAt = 0;
+let cachedOwnerUserId = '';
 
 function ensureArray(value) {
   return Array.isArray(value) ? value : [];
@@ -53,9 +58,38 @@ export async function fetchUserGroups(client, { forceRefresh = false } = {}) {
   }
 }
 
-export async function resolveBotUserId(client) {
-  const response = await client.auth.test();
-  return response.user_id;
+export async function resolveOwnerIdentity(client, ownerUserId) {
+  const response = await client.users.profile.get({ user: ownerUserId });
+  const profile = response?.profile ?? {};
+  return {
+    displayName: profile.display_name || profile.real_name || '',
+    iconUrl: profile.image_512 || profile.image_192 || profile.image_48 || '',
+  };
+}
+
+export async function fetchOwnerIdentity(client, ownerUserId, { forceRefresh = false } = {}) {
+  const now = Date.now();
+  if (
+    !forceRefresh &&
+    cachedOwnerIdentity &&
+    cachedOwnerUserId === ownerUserId &&
+    now - cachedOwnerIdentityAt < OWNER_PROFILE_CACHE_TTL_MS
+  ) {
+    return cachedOwnerIdentity;
+  }
+
+  try {
+    const identity = await resolveOwnerIdentity(client, ownerUserId);
+    cachedOwnerIdentity = identity;
+    cachedOwnerUserId = ownerUserId;
+    cachedOwnerIdentityAt = now;
+    return identity;
+  } catch {
+    if (cachedOwnerUserId === ownerUserId && cachedOwnerIdentity) {
+      return cachedOwnerIdentity;
+    }
+    return { displayName: '', iconUrl: '' };
+  }
 }
 
 export async function ensureDirectMessageChannel(client, userId) {
@@ -79,13 +113,36 @@ export function buildDailyUpdateText(settings, draft, questionText) {
   });
 }
 
+function buildDailyUpdateIdentity(ownerIdentity) {
+  if (ownerIdentity.displayName && ownerIdentity.iconUrl) {
+    return {
+      username: ownerIdentity.displayName,
+      icon_url: ownerIdentity.iconUrl,
+    };
+  }
+
+  if (ownerIdentity.displayName) {
+    return {
+      username: ownerIdentity.displayName,
+      icon_emoji: ':sparkles:',
+    };
+  }
+
+  return {
+    username: 'Asteria',
+    icon_emoji: ':sparkles:',
+  };
+}
+
 export async function sendDailyUpdate(client, settings, draft, questionText, { sentByUserId }) {
   const text = buildDailyUpdateText(settings, draft, questionText);
+  const ownerIdentity = await fetchOwnerIdentity(client, settings.personal_channel_owner_id);
+  const dailyUpdateIdentity = buildDailyUpdateIdentity(ownerIdentity);
+
   const response = await client.chat.postMessage({
     channel: settings.personal_channel_id,
     text,
-    username: 'Asteria',
-    icon_emoji: ':sparkles:',
+    ...dailyUpdateIdentity,
   });
 
   let threadTs = response.ts;

@@ -15,7 +15,10 @@ function getLogLevel(logLevel) {
 
 export async function createAsteriaRuntime() {
   const environment = loadEnvironment();
-  const store = await createStore(environment.databasePath);
+  const store = await createStore(environment.databasePath, {
+    ownerId: environment.personalChannelOwnerId,
+    channelId: environment.personalChannelId,
+  });
 
   const app = new App({
     token: environment.slackBotToken,

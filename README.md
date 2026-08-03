@@ -4,13 +4,14 @@ Asteria is a cloneable personal channel companion bot for Slack. It is designed 
 
 ## What Is Asteria?
 
-Asteria manages one specific Slack channel: your personal channel. The owner writes a Daily Update in App Home, optionally adds a song and an event, and sends it into the channel with a single button press. Asteria can also generate a daily question with Hack Club AI, ping a Slack user group in the Daily Update, remind the owner if they have not posted by the deadline, and welcome people who join the channel.
+Asteria manages one specific Slack channel: your personal channel. The owner writes a Daily Update in App Home, optionally adds a song and an event, and sends it into the channel with a single button press. The update posts under the owner's name and avatar. Asteria can also generate a daily question with Hack Club AI, ping a Slack user group in the Daily Update, remind the owner if they have not posted by the deadline, and welcome people who join the channel.
 
 Asteria is built for real deployment on a Debian-based server such as Hack Club Nest. It uses Slack Socket Mode, so it does not need a public HTTPS endpoint for event delivery.
 
 ## Features
 
 - Daily Updates sent manually from App Home.
+- Daily Updates appear in the personal channel under the owner's own name and avatar.
 - Markdown-friendly update text with links, mentions, bullets, and line breaks.
 - Optional Song of the Day and Event of the Day fields.
 - Slack user group mentions for the Daily Update ping.
@@ -117,11 +118,12 @@ Open Asteria’s App Home as the owner. The default tab is Daily Update.
 
 ### Daily Update
 
-- Write the day’s update in the main text field.
+- Write the day's update in the main text field.
 - Optionally add a Song of the Day.
 - Optionally add an Event of the Day.
-- Optionally enable a thread starter reply.
+- Optionally enable a thread starter reply and edit its text.
 - Press Send Daily Update to post to the configured personal channel.
+- The update is posted under the owner's Slack display name and avatar using Slack's `chat.postMessage`/`chat:write.customize` behaviour.
 
 ### Daily Question
 
@@ -154,7 +156,7 @@ Only the Slack user ID in `PERSONAL_CHANNEL_OWNER_ID` can save these settings. E
 2. Write the Daily Update.
 3. Add an optional song and event.
 4. Press Send Daily Update.
-5. Asteria posts the message to your personal channel and, if enabled, adds a thread reply.
+5. Asteria posts the message to your personal channel under your name and avatar and, if enabled, adds a thread reply.
 6. Asteria posts the Daily Question separately on its own schedule.
 7. If you have not posted by the reminder deadline, Asteria sends you a DM reminder.
 8. If someone joins your personal channel, Asteria sends the configured welcome message.
@@ -166,7 +168,9 @@ When Daily Question inclusion is enabled, the question is also included inside t
 Asteria only requests the scopes it actually uses:
 
 - `chat:write` for posting Daily Updates, Daily Questions, reminders, and welcome messages.
-- `chat:write.customize` for customized Slack message display values where supported.
+- `chat:write.customize` for posting the Daily Update with the owner's name and avatar.
+- `users.profile:read` for reading the owner's display name and avatar so the Daily Update can appear as the owner.
+- `channels:read` and `groups:read` for loading the personal channel picker in App Home.
 - `im:write` for opening a DM channel to the owner and sending reminder DMs.
 - `usergroups:read` for loading Slack user groups into the App Home selector.
 

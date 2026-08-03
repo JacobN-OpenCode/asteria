@@ -68,4 +68,77 @@ describe('scheduler', () => {
     assert.equal(client.conversations.open.mock.callCount(), 1);
     assert.equal(client.chat.postMessage.mock.callCount(), 1);
   });
+
+  it('sends the Daily Question as a separate message even when it is also included in the Daily Update', async () => {
+    const now = DateTime.utc();
+    const currentClock = now.setZone('UTC').toFormat('HH:mm');
+    const claimedJobs = new Set();
+    const postMessages = [];
+
+    const store = {
+      getSettings: () => ({
+        timezone: 'UTC',
+        daily_question_enabled: true,
+        daily_question_send_time: currentClock,
+        daily_question_include_in_daily_update: true,
+        daily_question_tone: 'friendly',
+        daily_question_custom_instructions: '',
+        daily_question_custom_topics_text: '',
+        daily_question_reply_text: 'Reply to this message in a thread!',
+        daily_question_topics: ['fun'],
+        daily_update_reminder_enabled: false,
+        daily_update_reminder_time: '00:00',
+        personal_channel_owner_id: 'UOWNER',
+        personal_channel_id: 'C123',
+        daily_update_ping_user_group_id: 'S123',
+      }),
+      claimScheduledJob: (jobName, localDate) => {
+        const key = `${jobName}:${localDate}`;
+        if (claimedJobs.has(key)) {
+          return false;
+        }
+        claimedJobs.add(key);
+        return true;
+      },
+      hasDailyUpdateOnDate: () => false,
+      getRecentDailyQuestionTexts: () => [],
+      recordDailyQuestion: mock.fn(),
+      completeScheduledJob: mock.fn(),
+      failScheduledJob: mock.fn(),
+    };
+
+    const client = {
+      chat: {
+        postMessage: mock.fn(async (payload) => {
+          postMessages.push(payload);
+          return { ts: '222.333' };
+        }),
+      },
+    };
+
+    const scheduler = createScheduler({
+      store,
+      aiService: {
+        generateDailyQuestion: mock.fn(async () => ({
+          questionText: 'What are you building this week?',
+          questionHash: 'abc123',
+        })),
+      },
+      client,
+      logger: {
+        error: mock.fn(),
+      },
+      environment: {
+        pollIntervalSeconds: 1,
+      },
+    });
+
+    await scheduler.tick();
+
+    assert.equal(postMessages.length, 1);
+    assert(postMessages[0].text.includes('❓ Daily Question'));
+    assert(postMessages[0].text.includes('Reply to this message in a thread!'));
+    assert(!postMessages[0].text.includes('<!subteam^S123>'));
+    assert.equal(store.recordDailyQuestion.mock.callCount(), 1);
+  });
 });

@@ -1,30 +1,29 @@
-import fs from "node:fs";
-import path from "node:path";
-import { fileURLToPath } from "node:url";
-import initSqlJs from "sql.js";
-import { getDefaultQuestionTopics, normalizeTimeValue } from "../utils/time.js";
+import fs from 'node:fs';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
+import initSqlJs from 'sql.js';
+import { getDefaultQuestionTopics, normalizeTimeValue } from '../utils/time.js';
 
 const DEFAULT_SETTINGS = {
-  personal_channel_owner_id: "",
-  personal_channel_id: "",
-  timezone: "UTC",
+  personal_channel_owner_id: '',
+  personal_channel_id: '',
+  timezone: 'UTC',
   daily_question_enabled: 1,
   daily_question_topics_json: JSON.stringify(getDefaultQuestionTopics()),
-  daily_question_tone: "friendly and curious",
-  daily_question_custom_instructions: "",
-  daily_question_custom_topics_text: "",
+  daily_question_tone: 'friendly and curious',
+  daily_question_custom_instructions: '',
+  daily_question_custom_topics_text: '',
   daily_question_include_in_daily_update: 0,
-  daily_question_send_time: "09:00",
-  daily_question_reply_text: "Reply to this message in a thread!",
+  daily_question_send_time: '09:00',
+  daily_question_reply_text: 'Reply to this message in a thread!',
   welcomer_enabled: 1,
-  welcome_message_content:
-    "Welcome {user}! 🎉\n\nPlease make yourself at home.",
-  rules_canvas_url: "",
-  daily_update_ping_user_group_id: "",
+  welcome_message_content: 'Welcome {user}! 🎉\n\nPlease make yourself at home.',
+  rules_canvas_url: '',
+  daily_update_ping_user_group_id: '',
   daily_update_thread_enabled: 0,
-  daily_update_thread_message: ":thread: here please!!",
+  daily_update_thread_message: ':thread: here please!!',
   daily_update_reminder_enabled: 1,
-  daily_update_reminder_time: "17:00",
+  daily_update_reminder_time: '17:00',
   updated_at: new Date().toISOString(),
 };
 
@@ -37,7 +36,7 @@ function toBooleanInteger(value) {
 }
 
 function parseBoolean(value) {
-  return value === 1 || value === "1" || value === true;
+  return value === 1 || value === '1' || value === true;
 }
 
 function parseJsonArray(text, fallback = []) {
@@ -65,37 +64,28 @@ function sanitizeSettingsPatch(patch) {
   }
 
   if (sanitizedPatch.daily_question_send_time) {
-    sanitizedPatch.daily_question_send_time = normalizeTimeValue(
-      sanitizedPatch.daily_question_send_time,
-      "09:00",
-    );
+    sanitizedPatch.daily_question_send_time = normalizeTimeValue(sanitizedPatch.daily_question_send_time, '09:00');
   }
 
   if (sanitizedPatch.daily_update_reminder_time) {
-    sanitizedPatch.daily_update_reminder_time = normalizeTimeValue(
-      sanitizedPatch.daily_update_reminder_time,
-      "17:00",
-    );
+    sanitizedPatch.daily_update_reminder_time = normalizeTimeValue(sanitizedPatch.daily_update_reminder_time, '17:00');
   }
 
-  if (typeof sanitizedPatch.daily_question_custom_topics_text === "string") {
-    sanitizedPatch.daily_question_custom_topics_text =
-      sanitizedPatch.daily_question_custom_topics_text.trim();
+  if (typeof sanitizedPatch.daily_question_custom_topics_text === 'string') {
+    sanitizedPatch.daily_question_custom_topics_text = sanitizedPatch.daily_question_custom_topics_text.trim();
   }
 
   if (Array.isArray(sanitizedPatch.daily_question_topics)) {
-    sanitizedPatch.daily_question_topics_json = JSON.stringify(
-      sanitizedPatch.daily_question_topics,
-    );
+    sanitizedPatch.daily_question_topics_json = JSON.stringify(sanitizedPatch.daily_question_topics);
     delete sanitizedPatch.daily_question_topics;
   }
 
   for (const booleanKey of [
-    "daily_question_enabled",
-    "daily_question_include_in_daily_update",
-    "welcomer_enabled",
-    "daily_update_thread_enabled",
-    "daily_update_reminder_enabled",
+    'daily_question_enabled',
+    'daily_question_include_in_daily_update',
+    'welcomer_enabled',
+    'daily_update_thread_enabled',
+    'daily_update_reminder_enabled',
   ]) {
     if (booleanKey in sanitizedPatch) {
       sanitizedPatch[booleanKey] = toBooleanInteger(sanitizedPatch[booleanKey]);
@@ -103,8 +93,7 @@ function sanitizeSettingsPatch(patch) {
   }
 
   if (sanitizedPatch.daily_question_reply_text) {
-    sanitizedPatch.daily_question_reply_text =
-      sanitizedPatch.daily_question_reply_text.trim();
+    sanitizedPatch.daily_question_reply_text = sanitizedPatch.daily_question_reply_text.trim();
   }
 
   return sanitizedPatch;
@@ -141,13 +130,13 @@ function bindAndRun(database, sql, params = {}) {
 }
 
 function getRowsChanged(database) {
-  return bindAndFetchOne(database, "SELECT changes() AS changes")?.changes ?? 0;
+  return bindAndFetchOne(database, 'SELECT changes() AS changes')?.changes ?? 0;
 }
 
 function normalizeParams(params) {
   return Object.fromEntries(
     Object.entries(params).map(([key, value]) => {
-      if (key.startsWith("$") || key.startsWith(":") || key.startsWith("@")) {
+      if (key.startsWith('$') || key.startsWith(':') || key.startsWith('@')) {
         return [key, value];
       }
 
@@ -156,23 +145,16 @@ function normalizeParams(params) {
   );
 }
 
-export async function createStore(databasePath) {
+export async function createStore(databasePath, options = {}) {
   ensureDirectoryForFile(databasePath);
 
-  const sqlJsDistDir = path.resolve(
-    path.dirname(fileURLToPath(import.meta.url)),
-    "../../node_modules/sql.js/dist",
-  );
+  const sqlJsDistDir = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../node_modules/sql.js/dist');
   const SQL = await initSqlJs({
     locateFile: (fileName) => path.join(sqlJsDistDir, fileName),
   });
 
-  const databaseBytes = fs.existsSync(databasePath)
-    ? fs.readFileSync(databasePath)
-    : null;
-  const database = databaseBytes
-    ? new SQL.Database(databaseBytes)
-    : new SQL.Database();
+  const databaseBytes = fs.existsSync(databasePath) ? fs.readFileSync(databasePath) : null;
+  const database = databaseBytes ? new SQL.Database(databaseBytes) : new SQL.Database();
 
   database.exec(`
     CREATE TABLE IF NOT EXISTS app_settings (
@@ -321,8 +303,7 @@ export async function createStore(databasePath) {
     fs.writeFileSync(databasePath, Buffer.from(database.export()));
   };
 
-  const getSettingsRow = () =>
-    bindAndFetchOne(database, "SELECT * FROM app_settings WHERE id = 1");
+  const getSettingsRow = () => bindAndFetchOne(database, 'SELECT * FROM app_settings WHERE id = 1');
   const updateSettingsRow = (params) => {
     bindAndRun(
       database,
@@ -355,8 +336,7 @@ export async function createStore(databasePath) {
     persist();
   };
 
-  const getDraftRow = () =>
-    bindAndFetchOne(database, "SELECT * FROM daily_update_drafts WHERE id = 1");
+  const getDraftRow = () => bindAndFetchOne(database, 'SELECT * FROM daily_update_drafts WHERE id = 1');
   const upsertDraftRow = (params) => {
     bindAndRun(
       database,
@@ -482,28 +462,17 @@ export async function createStore(databasePath) {
     return changes > 0;
   };
 
-  return {
+  const store = {
     getSettings() {
       const settingsRow = getSettingsRow();
       return {
         ...settingsRow,
-        daily_question_enabled: parseBoolean(
-          settingsRow.daily_question_enabled,
-        ),
-        daily_question_topics: parseJsonArray(
-          settingsRow.daily_question_topics_json,
-          getDefaultQuestionTopics(),
-        ),
-        daily_question_include_in_daily_update: parseBoolean(
-          settingsRow.daily_question_include_in_daily_update,
-        ),
+        daily_question_enabled: parseBoolean(settingsRow.daily_question_enabled),
+        daily_question_topics: parseJsonArray(settingsRow.daily_question_topics_json, getDefaultQuestionTopics()),
+        daily_question_include_in_daily_update: parseBoolean(settingsRow.daily_question_include_in_daily_update),
         welcomer_enabled: parseBoolean(settingsRow.welcomer_enabled),
-        daily_update_thread_enabled: parseBoolean(
-          settingsRow.daily_update_thread_enabled,
-        ),
-        daily_update_reminder_enabled: parseBoolean(
-          settingsRow.daily_update_reminder_enabled,
-        ),
+        daily_update_thread_enabled: parseBoolean(settingsRow.daily_update_thread_enabled),
+        daily_update_reminder_enabled: parseBoolean(settingsRow.daily_update_reminder_enabled),
       };
     },
 
@@ -522,7 +491,7 @@ export async function createStore(databasePath) {
       return getDraftRow();
     },
 
-    saveDraft({ mainUpdateText = "", songText = "", eventText = "" }) {
+    saveDraft({ mainUpdateText = '', songText = '', eventText = '' }) {
       const existingDraft = getDraftRow();
       const nowIso = new Date().toISOString();
       upsertDraftRow({
@@ -538,9 +507,9 @@ export async function createStore(databasePath) {
     clearDraft() {
       const nowIso = new Date().toISOString();
       upsertDraftRow({
-        $main_update_text: "",
-        $song_text: "",
-        $event_text: "",
+        $main_update_text: '',
+        $song_text: '',
+        $event_text: '',
         $created_at: getDraftRow()?.created_at ?? nowIso,
         $updated_at: nowIso,
       });
@@ -554,7 +523,7 @@ export async function createStore(databasePath) {
     hasDailyUpdateOnDate(localDate) {
       const row = bindAndFetchOne(
         database,
-        "SELECT COUNT(1) AS count FROM daily_update_history WHERE local_date = $local_date",
+        'SELECT COUNT(1) AS count FROM daily_update_history WHERE local_date = $local_date',
         { $local_date: localDate },
       );
       return row.count > 0;
@@ -563,17 +532,14 @@ export async function createStore(databasePath) {
     getRecentDailyQuestionTexts(limit = 5) {
       const rows = bindAndFetchAll(
         database,
-        "SELECT question_text FROM daily_question_history ORDER BY id DESC LIMIT $limit",
+        'SELECT question_text FROM daily_question_history ORDER BY id DESC LIMIT $limit',
         { $limit: limit },
       );
       return rows.map((row) => row.question_text);
     },
 
     getLastDailyQuestion() {
-      return bindAndFetchOne(
-        database,
-        "SELECT * FROM daily_question_history ORDER BY id DESC LIMIT 1",
-      );
+      return bindAndFetchOne(database, 'SELECT * FROM daily_question_history ORDER BY id DESC LIMIT 1');
     },
 
     recordDailyQuestion({
@@ -603,7 +569,7 @@ export async function createStore(databasePath) {
       return claimJobRow({
         $job_name: jobName,
         $local_date: localDate,
-        $status: "claimed",
+        $status: 'claimed',
         $claimed_at_utc: new Date().toISOString(),
         $payload_json: JSON.stringify(payload),
       });
@@ -613,7 +579,7 @@ export async function createStore(databasePath) {
       updateJobRow({
         $job_name: jobName,
         $local_date: localDate,
-        $status: "completed",
+        $status: 'completed',
         $completed_at_utc: new Date().toISOString(),
         $error_text: null,
         $payload_json: JSON.stringify(payload),
@@ -624,7 +590,7 @@ export async function createStore(databasePath) {
       updateJobRow({
         $job_name: jobName,
         $local_date: localDate,
-        $status: "failed",
+        $status: 'failed',
         $completed_at_utc: new Date().toISOString(),
         $error_text: errorText,
         $payload_json: JSON.stringify(payload),
@@ -634,7 +600,7 @@ export async function createStore(databasePath) {
     getScheduledJob(jobName, localDate) {
       return bindAndFetchOne(
         database,
-        "SELECT * FROM scheduled_job_runs WHERE job_name = $job_name AND local_date = $local_date",
+        'SELECT * FROM scheduled_job_runs WHERE job_name = $job_name AND local_date = $local_date',
         {
           $job_name: jobName,
           $local_date: localDate,
@@ -655,7 +621,7 @@ export async function createStore(databasePath) {
     hasWelcomeEvent({ eventTs, channelId, userId }) {
       const row = bindAndFetchOne(
         database,
-        "SELECT COUNT(1) AS count FROM welcome_events WHERE event_ts = $event_ts AND channel_id = $channel_id AND user_id = $user_id",
+        'SELECT COUNT(1) AS count FROM welcome_events WHERE event_ts = $event_ts AND channel_id = $channel_id AND user_id = $user_id',
         {
           $event_ts: eventTs,
           $channel_id: channelId,
@@ -671,4 +637,19 @@ export async function createStore(databasePath) {
       database.close();
     },
   };
+
+  const { ownerId = '', channelId = '' } = options;
+  const currentSettings = store.getSettings();
+  const seedPatch = {};
+  if (!currentSettings.personal_channel_owner_id && ownerId) {
+    seedPatch.personal_channel_owner_id = ownerId;
+  }
+  if (!currentSettings.personal_channel_id && channelId) {
+    seedPatch.personal_channel_id = channelId;
+  }
+  if (Object.keys(seedPatch).length > 0) {
+    store.updateSettings(seedPatch);
+  }
+
+  return store;
 }
