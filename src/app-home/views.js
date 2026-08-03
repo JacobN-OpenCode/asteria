@@ -1,4 +1,5 @@
 import { buildUserGroupOptions } from '../services/slack.js';
+import { contentToMrkdwn } from '../utils/messages.js';
 import { getDefaultQuestionTopics, normalizeTimeValue } from '../utils/time.js';
 
 const QUESTION_TOPIC_OPTIONS = [
@@ -111,6 +112,8 @@ function buildTopSummary(settings) {
 }
 
 function buildDailyUpdateView({ settings, draft, questionPreview, notice }) {
+  const draftPreview = draft?.main_update_text ? contentToMrkdwn(draft.main_update_text) : '';
+
   return {
     type: 'home',
     callback_id: 'asteria_home_daily_update',
@@ -123,7 +126,7 @@ function buildDailyUpdateView({ settings, draft, questionPreview, notice }) {
         type: 'section',
         text: {
           type: 'mrkdwn',
-          text: "Write today's update below, optionally add a song and event, then press *Send Daily Update*.",
+          text: "Compose today's update with full Slack formatting, then press *Send Daily Update*.",
         },
       },
       ...(questionPreview
@@ -138,58 +141,28 @@ function buildDailyUpdateView({ settings, draft, questionPreview, notice }) {
           ]
         : []),
       {
-        type: 'input',
-        block_id: 'daily_update_main_block',
-        label: {
-          type: 'plain_text',
-          text: 'Daily Update',
-        },
-        element: {
-          type: 'plain_text_input',
-          action_id: 'daily_update_main_text',
-          multiline: true,
-          initial_value: draft.main_update_text || '',
-          placeholder: {
-            type: 'plain_text',
-            text: 'Use Slack formatting, links, lists, and mentions here.',
-          },
+        type: 'section',
+        text: {
+          type: 'mrkdwn',
+          text: draftPreview
+            ? `*Current draft*\n${draftPreview}`
+            : 'No draft composed yet. Use *Compose Daily Update* to write today’s update.',
         },
       },
       {
-        type: 'input',
-        block_id: 'daily_update_song_block',
-        optional: true,
-        label: {
-          type: 'plain_text',
-          text: 'Song of the Day',
-        },
-        element: {
-          type: 'plain_text_input',
-          action_id: 'daily_update_song_text',
-          initial_value: draft.song_text || '',
-          placeholder: {
-            type: 'plain_text',
-            text: 'Optional: a track title or link',
+        type: 'actions',
+        block_id: 'daily_update_compose_actions',
+        elements: [
+          {
+            type: 'button',
+            action_id: 'open_daily_update_modal',
+            text: {
+              type: 'plain_text',
+              text: 'Compose Daily Update',
+            },
+            style: 'primary',
           },
-        },
-      },
-      {
-        type: 'input',
-        block_id: 'daily_update_event_block',
-        optional: true,
-        label: {
-          type: 'plain_text',
-          text: 'Event of the Day',
-        },
-        element: {
-          type: 'plain_text_input',
-          action_id: 'daily_update_event_text',
-          initial_value: draft.event_text || '',
-          placeholder: {
-            type: 'plain_text',
-            text: 'Optional: anything you want to announce',
-          },
-        },
+        ],
       },
       {
         type: 'section',
@@ -231,23 +204,27 @@ function buildDailyUpdateView({ settings, draft, questionPreview, notice }) {
         },
       },
       {
-        type: 'input',
-        block_id: 'daily_update_thread_message_block',
-        optional: true,
-        label: {
-          type: 'plain_text',
-          text: 'Thread starter message',
+        type: 'section',
+        text: {
+          type: 'mrkdwn',
+          text: `*Thread starter message*\n${
+            settings.daily_update_thread_message ? contentToMrkdwn(settings.daily_update_thread_message) : '_not set_'
+          }`,
         },
-        element: {
-          type: 'plain_text_input',
-          action_id: 'daily_update_thread_message',
-          multiline: true,
-          initial_value: settings.daily_update_thread_message || '',
-          placeholder: {
-            type: 'plain_text',
-            text: 'For example: :thread: here please!!',
+      },
+      {
+        type: 'actions',
+        block_id: 'daily_update_thread_actions',
+        elements: [
+          {
+            type: 'button',
+            action_id: 'open_thread_message_modal',
+            text: {
+              type: 'plain_text',
+              text: 'Edit thread message',
+            },
           },
-        },
+        ],
       },
       {
         type: 'actions',
@@ -526,22 +503,27 @@ function buildWelcomerView({ settings, notice }) {
         },
       },
       {
-        type: 'input',
-        block_id: 'welcome_message_block',
-        label: {
-          type: 'plain_text',
-          text: 'Welcome message',
+        type: 'section',
+        text: {
+          type: 'mrkdwn',
+          text: `*Welcome message*\n${
+            settings.welcome_message_content
+              ? contentToMrkdwn(settings.welcome_message_content)
+              : '_not set — a default welcome will be used_'
+          }`,
         },
-        element: {
-          type: 'plain_text_input',
-          action_id: 'welcome_message_content',
-          multiline: true,
-          initial_value: settings.welcome_message_content || '',
-          placeholder: {
-            type: 'plain_text',
-            text: 'Use {user} where you want the new member mention to appear',
+      },
+      {
+        type: 'actions',
+        block_id: 'welcome_message_actions',
+        elements: [
+          {
+            type: 'button',
+            action_id: 'open_welcome_message_modal',
+            text: { type: 'plain_text', text: 'Edit welcome message' },
+            style: 'primary',
           },
-        },
+        ],
       },
       {
         type: 'input',
@@ -671,16 +653,19 @@ function buildSettingsView({ settings, notice, userGroups }) {
         },
       },
       {
-        type: 'input',
-        block_id: 'personal_channel_block',
-        label: { type: 'plain_text', text: 'Personal channel' },
-        element: {
-          type: 'conversations_select',
-          action_id: 'personal_channel_id',
-          initial_conversation: settings.personal_channel_id || undefined,
-          placeholder: {
+        type: 'section',
+        text: {
+          type: 'mrkdwn',
+          text: `*Personal channel*\n${
+            settings.personal_channel_id ? `\`${settings.personal_channel_id}\`` : '_not set_'
+          }`,
+        },
+        accessory: {
+          type: 'button',
+          action_id: 'open_personal_channel_modal',
+          text: {
             type: 'plain_text',
-            text: 'Choose the personal channel',
+            text: 'Change channel',
           },
         },
       },

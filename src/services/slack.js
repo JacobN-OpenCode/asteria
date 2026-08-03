@@ -1,4 +1,5 @@
 import {
+  contentToMrkdwn,
   formatDailyQuestionMessage,
   formatDailyUpdateMessage,
   formatUserGroupMention,
@@ -146,11 +147,12 @@ export async function sendDailyUpdate(client, settings, draft, questionText, { s
   });
 
   let threadTs = response.ts;
-  if (settings.daily_update_thread_enabled && settings.daily_update_thread_message?.trim()) {
+  const threadMessage = contentToMrkdwn(settings.daily_update_thread_message).trim();
+  if (settings.daily_update_thread_enabled && threadMessage) {
     const threadResponse = await client.chat.postMessage({
       channel: settings.personal_channel_id,
       thread_ts: response.ts,
-      text: settings.daily_update_thread_message.trim(),
+      text: threadMessage,
       username: 'Asteria',
       icon_emoji: ':sparkles:',
     });
@@ -183,7 +185,7 @@ export async function sendDailyQuestion(client, settings, questionText) {
 }
 
 export async function sendWelcomeMessage(client, settings, { userId }) {
-  const welcomeText = replaceWelcomePlaceholders(settings.welcome_message_content, { userId });
+  const welcomeText = replaceWelcomePlaceholders(contentToMrkdwn(settings.welcome_message_content), { userId });
   const messageParts = [welcomeText];
 
   if (settings.rules_canvas_url?.trim()) {

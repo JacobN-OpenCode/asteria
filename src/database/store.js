@@ -491,7 +491,10 @@ export async function createStore(databasePath, options = {}) {
       return getDraftRow();
     },
 
-    saveDraft({ mainUpdateText = '', songText = '', eventText = '' }) {
+    saveDraft(payload = {}) {
+      const mainUpdateText = payload.mainUpdateText ?? payload.main_update_text ?? '';
+      const songText = payload.songText ?? payload.song_text ?? '';
+      const eventText = payload.eventText ?? payload.event_text ?? '';
       const existingDraft = getDraftRow();
       const nowIso = new Date().toISOString();
       upsertDraftRow({

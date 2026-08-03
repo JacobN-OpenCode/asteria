@@ -1,6 +1,6 @@
 import assert from 'node:assert';
 import { describe, it, mock } from 'node:test';
-import { sendDailyUpdate } from '../src/services/slack.js';
+import { sendDailyUpdate, sendWelcomeMessage } from '../src/services/slack.js';
 
 describe('Daily Update owner masking', () => {
   it('posts the Daily Update under the owner display name and avatar via chat:write.customize', async () => {
@@ -130,5 +130,82 @@ describe('Daily Update owner masking', () => {
     assert.equal(threadCall.thread_ts, '555.666');
     assert.equal(threadCall.username, 'Asteria');
     assert.equal(result.threadTs, '555.666');
+  });
+
+  it('converts a rich text thread starter message to mrkdwn', async () => {
+    const client = {
+      users: {
+        profile: {
+          get: mock.fn(async () => ({
+            profile: {
+              display_name: 'Jordan',
+              image_192: 'https://example.com/avatar-192.png',
+            },
+          })),
+        },
+      },
+      chat: {
+        postMessage: mock.fn(async () => ({ ts: '555.666' })),
+      },
+    };
+
+    const settings = {
+      personal_channel_owner_id: 'UOWNER',
+      personal_channel_id: 'C123',
+      daily_update_ping_user_group_id: '',
+      daily_question_include_in_daily_update: false,
+      daily_update_thread_enabled: true,
+      daily_update_thread_message: JSON.stringify([
+        {
+          type: 'rich_text_section',
+          elements: [
+            { type: 'text', text: 'Discussions', bold: true },
+            { type: 'text', text: ' ' },
+            { type: 'text', text: 'here' },
+          ],
+        },
+      ]),
+    };
+    const draft = {
+      main_update_text: 'Posting with a thread',
+      song_text: '',
+      event_text: '',
+    };
+
+    await sendDailyUpdate(client, settings, draft, '', {
+      sentByUserId: 'UOWNER',
+    });
+
+    const threadCall = client.chat.postMessage.mock.calls[1].arguments[0];
+    assert.equal(threadCall.text, '*Discussions* here');
+  });
+
+  it('converts a rich text welcome message and replaces the user mention', async () => {
+    const client = {
+      chat: {
+        postMessage: mock.fn(async () => ({ ts: '777.888' })),
+      },
+    };
+
+    const settings = {
+      personal_channel_id: 'C123',
+      welcome_message_content: JSON.stringify([
+        {
+          type: 'rich_text_section',
+          elements: [
+            { type: 'text', text: 'Welcome ' },
+            { type: 'text', text: '{user}', bold: true },
+            { type: 'text', text: ' to the club!' },
+          ],
+        },
+      ]),
+      rules_canvas_url: '',
+    };
+
+    const response = await sendWelcomeMessage(client, settings, { userId: 'U123' });
+
+    const callArgs = client.chat.postMessage.mock.calls[0].arguments[0];
+    assert(callArgs.text.includes('Welcome *<@U123>* to the club!'));
+    assert.equal(response.ts, '777.888');
   });
 });

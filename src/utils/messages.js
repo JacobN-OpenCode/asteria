@@ -31,7 +31,7 @@ export function formatDailyUpdateMessage({
 
   messageSections.push('*DAILY UPDATE*');
 
-  const updateBody = trimOrEmpty(mainUpdateText);
+  const updateBody = trimOrEmpty(contentToMrkdwn(mainUpdateText));
   if (updateBody) {
     messageSections.push(updateBody);
   }
@@ -87,4 +87,139 @@ export function isRepeatedQuestion(questionText, recentQuestions) {
   return recentQuestions.some(
     (previousQuestion) => normalizeQuestionText(previousQuestion).toLowerCase() === candidate,
   );
+}
+
+function richTextElementToMrkdwn(element) {
+  if (!element) {
+    return '';
+  }
+
+  let text = '';
+  switch (element.type) {
+    case 'text':
+      text = element.text ?? '';
+      break;
+    case 'link':
+      text = element.url
+        ? element.text
+          ? `<${element.url}|${element.text}>`
+          : `<${element.url}>`
+        : (element.text ?? '');
+      break;
+    case 'user':
+      text = `<@${element.user_id}>`;
+      break;
+    case 'usergroup':
+      text = `<!subteam^${element.usergroup_id}>`;
+      break;
+    case 'channel':
+      text = `<#${element.channel_id}>`;
+      break;
+    case 'emoji':
+      text = element.name ? `:${element.name}:` : (element.unicode ?? '');
+      break;
+    case 'broadcast':
+      text = element.range === 'here' ? '<!here>' : element.range === 'everyone' ? '<!everyone>' : '<!channel>';
+      break;
+    case 'date':
+      text = element.timestamp
+        ? `<!date^${element.timestamp}^${element.format || '{date}'}|${element.fallback || ''}>`
+        : (element.fallback ?? '');
+      break;
+    default:
+      text = '';
+  }
+
+  if (element.code) {
+    text = `\`${text}\``;
+  }
+  if (element.italic) {
+    text = `_${text}_`;
+  }
+  if (element.bold) {
+    text = `*${text}*`;
+  }
+  if (element.strike) {
+    text = `~${text}~`;
+  }
+
+  return text;
+}
+
+function richTextSectionToMrkdwn(section) {
+  if (!section) {
+    return '';
+  }
+
+  if (section.type === 'rich_text_list') {
+    const isOrdered = section.style === 'ordered';
+    return (section.elements || [])
+      .map((item, index) => {
+        const itemText = richTextSectionToMrkdwn(item);
+        return `${isOrdered ? `${index + 1}.` : '•'} ${itemText}`;
+      })
+      .join('\n');
+  }
+
+  if (section.type === 'rich_text_quote') {
+    return (section.elements || [])
+      .map((line) =>
+        richTextSectionToMrkdwn(line)
+          .split('\n')
+          .map((text) => `> ${text}`)
+          .join('\n'),
+      )
+      .join('\n');
+  }
+
+  if (section.type === 'rich_text_preformatted') {
+    return `\`\`\`\n${(section.elements || []).map(richTextElementToMrkdwn).join('')}\n\`\`\``;
+  }
+
+  return (section.elements || []).map(richTextElementToMrkdwn).join('');
+}
+
+export function isRichTextContent(value) {
+  if (typeof value !== 'string' || !value.trim()) {
+    return false;
+  }
+
+  try {
+    const parsedValue = JSON.parse(value);
+    return (
+      Array.isArray(parsedValue) &&
+      parsedValue.length > 0 &&
+      parsedValue.every(
+        (section) => section && typeof section.type === 'string' && section.type.startsWith('rich_text_'),
+      )
+    );
+  } catch {
+    return false;
+  }
+}
+
+export function contentToMrkdwn(value) {
+  if (!isRichTextContent(value)) {
+    return typeof value === 'string' ? value : '';
+  }
+
+  try {
+    const sections = JSON.parse(value);
+    return sections.map(richTextSectionToMrkdwn).join('\n\n');
+  } catch {
+    return typeof value === 'string' ? value : '';
+  }
+}
+
+export function toRichTextInitialValue(value) {
+  if (isRichTextContent(value)) {
+    return value;
+  }
+
+  const text = trimOrEmpty(value);
+  if (!text) {
+    return undefined;
+  }
+
+  return JSON.stringify([{ type: 'rich_text_section', elements: [{ type: 'text', text }] }]);
 }
