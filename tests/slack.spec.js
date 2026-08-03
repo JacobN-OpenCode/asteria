@@ -181,6 +181,68 @@ describe('Daily Update owner masking', () => {
     assert.equal(threadCall.text, '*Discussions* here');
   });
 
+  it('uses the configured bot name for the follow-up message and fallback identity', async () => {
+    const client = {
+      users: {
+        profile: {
+          get: mock.fn(async () => {
+            throw new Error('missing_scope');
+          }),
+        },
+      },
+      chat: {
+        postMessage: mock.fn(async () => ({ ts: '888.999' })),
+      },
+    };
+
+    const settings = {
+      personal_channel_owner_id: 'UNAMETEST',
+      personal_channel_id: 'C123',
+      daily_update_ping_user_group_id: '',
+      daily_question_include_in_daily_update: false,
+      daily_update_thread_enabled: true,
+      daily_update_thread_message: 'Follow up here!',
+      bot_display_name: 'Stella',
+    };
+    const draft = {
+      main_update_text: 'Hello',
+      song_text: '',
+      event_text: '',
+    };
+
+    const result = await sendDailyUpdate(client, settings, draft, '', {
+      sentByUserId: 'UOWNER',
+    });
+
+    assert.equal(client.chat.postMessage.mock.callCount(), 2);
+    const mainCall = client.chat.postMessage.mock.calls[0].arguments[0];
+    assert.equal(mainCall.username, 'Stella');
+    assert.equal(mainCall.icon_url, undefined);
+    const followUpCall = client.chat.postMessage.mock.calls[1].arguments[0];
+    assert.equal(followUpCall.username, 'Stella');
+    assert.equal(result.threadTs, '888.999');
+  });
+
+  it('posts the welcome message under the configured bot name', async () => {
+    const client = {
+      chat: {
+        postMessage: mock.fn(async () => ({ ts: '777.888' })),
+      },
+    };
+
+    const settings = {
+      personal_channel_id: 'C123',
+      welcome_message_content: 'Welcome!',
+      rules_canvas_url: '',
+      bot_display_name: 'Stella',
+    };
+
+    await sendWelcomeMessage(client, settings, { userId: 'U123' });
+
+    const callArgs = client.chat.postMessage.mock.calls[0].arguments[0];
+    assert.equal(callArgs.username, 'Stella');
+  });
+
   it('converts a rich text welcome message and replaces the user mention', async () => {
     const client = {
       chat: {

@@ -560,4 +560,65 @@ describe('App Home handlers', () => {
     assert.equal(client.chat.postMessage.mock.callCount(), 0);
     store.close();
   });
+
+  it('saves the bot name from the general settings tab', async () => {
+    const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'asteria-apphome-'));
+    const databasePath = path.join(tempDir, 'asteria.sqlite');
+    createdPaths.push(databasePath);
+
+    const store = await createStore(databasePath);
+    store.updateSettings({
+      personal_channel_owner_id: 'UOWNER',
+      timezone: 'UTC',
+      daily_update_reminder_enabled: true,
+      daily_update_reminder_time: '17:00',
+    });
+
+    const client = createClient();
+    const handlers = createHandlerTestHarness({ store });
+
+    await handlers['action:save_general_settings']({
+      ack: mock.fn(),
+      body: {
+        user: { id: 'UOWNER' },
+        view: {
+          state: {
+            values: {
+              bot_name_block: { bot_display_name: { value: '  Stella  ' } },
+              timezone_block: { timezone: { value: 'UTC' } },
+              daily_update_reminder_enabled_block: {
+                daily_update_reminder_enabled: { selected_options: [{ value: 'enabled' }] },
+              },
+              daily_update_reminder_time_block: { daily_update_reminder_time: { value: '17:00' } },
+            },
+          },
+        },
+      },
+      client,
+    });
+
+    assert.equal(store.getSettings().bot_display_name, 'Stella');
+    store.close();
+  });
+
+  it('shows the bot name input in the settings tab', async () => {
+    const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'asteria-apphome-'));
+    const databasePath = path.join(tempDir, 'asteria.sqlite');
+    createdPaths.push(databasePath);
+
+    const store = await createStore(databasePath);
+    store.updateSettings({ personal_channel_owner_id: 'UOWNER', bot_display_name: 'Stella' });
+
+    const client = createClient();
+    const handlers = createHandlerTestHarness({ store });
+
+    await handlers.publishTab(client, 'UOWNER', 'settings');
+
+    const publishArgs = client.views.publish.mock.calls[0].arguments[0];
+    const botNameInput = publishArgs.view.blocks.find((block) => block.block_id === 'bot_name_block');
+    assert(botNameInput);
+    assert.equal(botNameInput.element.action_id, 'bot_display_name');
+    assert.equal(botNameInput.element.initial_value, 'Stella');
+    store.close();
+  });
 });

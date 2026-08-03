@@ -596,6 +596,20 @@ function buildSettingsView({ settings, notice }) {
       },
       {
         type: 'input',
+        block_id: 'bot_name_block',
+        label: { type: 'plain_text', text: 'Bot name' },
+        element: {
+          type: 'plain_text_input',
+          action_id: 'bot_display_name',
+          initial_value: settings.bot_display_name || 'Asteria',
+          placeholder: {
+            type: 'plain_text',
+            text: 'Name shown when Asteria posts as the bot',
+          },
+        },
+      },
+      {
+        type: 'input',
         block_id: 'timezone_block',
         label: { type: 'plain_text', text: 'Timezone' },
         element: {

@@ -100,7 +100,7 @@ export function buildDailyUpdateText(settings, draft, questionText) {
   });
 }
 
-function buildDailyUpdateIdentity(ownerIdentity) {
+function buildDailyUpdateIdentity(ownerIdentity, botName) {
   if (ownerIdentity.displayName && ownerIdentity.iconUrl) {
     return {
       username: ownerIdentity.displayName,
@@ -115,14 +115,15 @@ function buildDailyUpdateIdentity(ownerIdentity) {
   }
 
   return {
-    username: 'Asteria',
+    username: botName || 'Asteria',
   };
 }
 
 export async function sendDailyUpdate(client, settings, draft, questionText, { sentByUserId }) {
   const text = buildDailyUpdateText(settings, draft, questionText);
+  const botName = settings.bot_display_name || 'Asteria';
   const ownerIdentity = await fetchOwnerIdentity(client, settings.personal_channel_owner_id);
-  const dailyUpdateIdentity = buildDailyUpdateIdentity(ownerIdentity);
+  const dailyUpdateIdentity = buildDailyUpdateIdentity(ownerIdentity, botName);
 
   const response = await client.chat.postMessage({
     channel: settings.personal_channel_id,
@@ -136,7 +137,7 @@ export async function sendDailyUpdate(client, settings, draft, questionText, { s
     const followUpResponse = await client.chat.postMessage({
       channel: settings.personal_channel_id,
       text: followUpMessage,
-      username: 'Asteria',
+      username: botName,
     });
 
     threadTs = followUpResponse.ts || response.ts;
@@ -156,7 +157,7 @@ export async function sendDailyQuestion(client, settings, questionText) {
   const response = await client.chat.postMessage({
     channel: settings.personal_channel_id,
     text,
-    username: 'Asteria',
+    username: settings.bot_display_name || 'Asteria',
   });
 
   return {
@@ -176,7 +177,7 @@ export async function sendWelcomeMessage(client, settings, { userId }) {
   const response = await client.chat.postMessage({
     channel: settings.personal_channel_id,
     text: messageParts.join('\n\n'),
-    username: 'Asteria',
+    username: settings.bot_display_name || 'Asteria',
   });
 
   return response;

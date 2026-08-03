@@ -475,6 +475,7 @@ export function createHomeHandlers({ app, store, aiService }) {
     }
 
     store.updateSettings({
+      bot_display_name: getInputValue(viewState, 'bot_name_block', 'bot_display_name'),
       timezone,
       daily_update_reminder_enabled: getCheckboxEnabled(
         viewState,

@@ -59,6 +59,24 @@ describe('Asteria store', () => {
     store.close();
   });
 
+  it('defaults, persists, and falls back the configured bot name', async () => {
+    const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'asteria-store-'));
+    const databasePath = path.join(tempDir, 'asteria.sqlite');
+    createdPaths.push(databasePath);
+
+    let store = await createStore(databasePath);
+    assert.equal(store.getSettings().bot_display_name, 'Asteria');
+    store.updateSettings({ bot_display_name: 'Star' });
+    assert.equal(store.getSettings().bot_display_name, 'Star');
+    store.close();
+
+    store = await createStore(databasePath);
+    assert.equal(store.getSettings().bot_display_name, 'Star');
+    store.updateSettings({ bot_display_name: '   ' });
+    assert.equal(store.getSettings().bot_display_name, 'Asteria');
+    store.close();
+  });
+
   it('seeds the personal channel owner and channel from environment on first run', async () => {
     const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'asteria-store-'));
     const databasePath = path.join(tempDir, 'asteria.sqlite');

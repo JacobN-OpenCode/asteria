@@ -8,6 +8,7 @@ const DEFAULT_SETTINGS = {
   personal_channel_owner_id: '',
   personal_channel_id: '',
   timezone: 'UTC',
+  bot_display_name: 'Asteria',
   daily_question_enabled: 1,
   daily_question_topics_json: JSON.stringify(getDefaultQuestionTopics()),
   daily_question_tone: 'friendly and curious',
@@ -61,6 +62,10 @@ function sanitizeSettingsPatch(patch) {
 
   if (sanitizedPatch.timezone) {
     sanitizedPatch.timezone = sanitizedPatch.timezone.trim();
+  }
+
+  if ('bot_display_name' in sanitizedPatch) {
+    sanitizedPatch.bot_display_name = sanitizedPatch.bot_display_name.trim() || 'Asteria';
   }
 
   if (sanitizedPatch.daily_question_send_time) {
@@ -162,6 +167,7 @@ export async function createStore(databasePath, options = {}) {
       personal_channel_owner_id TEXT NOT NULL DEFAULT '',
       personal_channel_id TEXT NOT NULL DEFAULT '',
       timezone TEXT NOT NULL DEFAULT 'UTC',
+      bot_display_name TEXT NOT NULL DEFAULT 'Asteria',
       daily_question_enabled INTEGER NOT NULL DEFAULT 1,
       daily_question_topics_json TEXT NOT NULL DEFAULT '[]',
       daily_question_tone TEXT NOT NULL DEFAULT 'friendly and curious',
@@ -239,6 +245,13 @@ export async function createStore(databasePath, options = {}) {
     );
   `);
 
+  const existingSettingColumns = bindAndFetchAll(database, 'PRAGMA table_info(app_settings)').map(
+    (column) => column.name,
+  );
+  if (!existingSettingColumns.includes('bot_display_name')) {
+    bindAndRun(database, "ALTER TABLE app_settings ADD COLUMN bot_display_name TEXT NOT NULL DEFAULT 'Asteria'");
+  }
+
   bindAndRun(
     database,
     `
@@ -247,6 +260,7 @@ export async function createStore(databasePath, options = {}) {
       personal_channel_owner_id,
       personal_channel_id,
       timezone,
+      bot_display_name,
       daily_question_enabled,
       daily_question_topics_json,
       daily_question_tone,
@@ -269,6 +283,7 @@ export async function createStore(databasePath, options = {}) {
       $personal_channel_owner_id,
       $personal_channel_id,
       $timezone,
+      $bot_display_name,
       $daily_question_enabled,
       $daily_question_topics_json,
       $daily_question_tone,
@@ -312,6 +327,7 @@ export async function createStore(databasePath, options = {}) {
         personal_channel_owner_id = $personal_channel_owner_id,
         personal_channel_id = $personal_channel_id,
         timezone = $timezone,
+        bot_display_name = $bot_display_name,
         daily_question_enabled = $daily_question_enabled,
         daily_question_topics_json = $daily_question_topics_json,
         daily_question_tone = $daily_question_tone,
