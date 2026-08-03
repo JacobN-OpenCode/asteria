@@ -1,0 +1,17 @@
+[Unit]
+Description=Asteria Slack bot
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/asteria
+EnvironmentFile=/opt/asteria/.env
+ExecStart=/usr/bin/node /opt/asteria/app.js
+Restart=always
+RestartSec=10
+User=asteria
+Group=asteria
+
+[Install]
+WantedBy=multi-user.target

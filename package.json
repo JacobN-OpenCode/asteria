@@ -1,33 +1,27 @@
 {
-  "name": "bolt-js-starter-template",
+  "name": "asteria",
   "version": "1.0.0",
-  "description": "A scaffold template for Slack apps",
+  "description": "A cloneable personal channel companion bot for Slack",
   "type": "module",
   "main": "app.js",
   "scripts": {
     "dev": "node --watch app.js",
-    "lint": "npx @biomejs/biome check *.js listeners",
-    "lint:fix": "npx @biomejs/biome check --write *.js listeners",
+    "lint": "npx @biomejs/biome check .",
+    "lint:fix": "npx @biomejs/biome check --write .",
     "start": "node app.js",
-    "test": "node --test tests/**/*.spec.js"
+    "test": "node --test tests/*.spec.js tests/**/*.spec.js"
   },
-  "author": "Slack Technologies, LLC",
   "license": "MIT",
   "keywords": [
     "slack",
     "bolt",
     "slackapi"
   ],
-  "repository": {
-    "type": "git",
-    "url": "https://github.com/slack-samples/bolt-js-starter-template.git"
-  },
-  "bugs": {
-    "url": "https://github.com/slack-samples/bolt-js-starter-template/issues"
-  },
   "dependencies": {
     "@slack/bolt": "^5.0.0",
-    "dotenv": "~17.4.2"
+    "dotenv": "~17.4.2",
+    "luxon": "^3.7.1",
+    "sql.js": "^1.13.0"
   },
   "devDependencies": {
     "@biomejs/biome": "^2.5.6"

@@ -1,0 +1,82 @@
+import assert from 'node:assert';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+import { afterEach, describe, it } from 'node:test';
+import { createStore } from '../src/database/store.js';
+
+let createdPaths = [];
+
+afterEach(() => {
+  for (const databasePath of createdPaths) {
+    fs.rmSync(path.dirname(databasePath), { recursive: true, force: true });
+  }
+  createdPaths = [];
+});
+
+describe('Asteria store', () => {
+  it('persists settings and drafts across restarts', async () => {
+    const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'asteria-store-'));
+    const databasePath = path.join(tempDir, 'asteria.sqlite');
+    createdPaths.push(databasePath);
+
+    let store = await createStore(databasePath);
+    store.updateSettings({
+      personal_channel_owner_id: 'UOWNER',
+      personal_channel_id: 'C123',
+      timezone: 'Europe/London',
+      daily_update_ping_user_group_id: 'S123',
+    });
+    store.saveDraft({
+      mainUpdateText: 'Hello world',
+      songText: 'Song',
+      eventText: 'Event',
+    });
+    store.recordDailyUpdateSend({
+      sent_at_utc: '2026-08-03T12:00:00Z',
+      local_date: '2026-08-03',
+      message_ts: '111.222',
+      thread_ts: '111.222',
+      main_update_text: 'Hello world',
+      song_text: 'Song',
+      event_text: 'Event',
+      question_text: '',
+      user_group_id: 'S123',
+      sent_by_user_id: 'UOWNER',
+    });
+    store.close();
+
+    store = await createStore(databasePath);
+    const settings = store.getSettings();
+    const draft = store.getDraft();
+
+    assert.equal(settings.personal_channel_owner_id, 'UOWNER');
+    assert.equal(settings.personal_channel_id, 'C123');
+    assert.equal(settings.timezone, 'Europe/London');
+    assert.equal(settings.daily_update_ping_user_group_id, 'S123');
+    assert.equal(draft.main_update_text, 'Hello world');
+    assert.equal(store.hasDailyUpdateOnDate('2026-08-03'), true);
+    store.close();
+  });
+
+  it('prevents duplicate scheduled job claims for the same day', async () => {
+    const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'asteria-store-'));
+    const databasePath = path.join(tempDir, 'asteria.sqlite');
+    createdPaths.push(databasePath);
+
+    const store = await createStore(databasePath);
+    assert.equal(
+      store.claimScheduledJob('daily-reminder', '2026-08-03', {
+        kind: 'reminder',
+      }),
+      true,
+    );
+    assert.equal(
+      store.claimScheduledJob('daily-reminder', '2026-08-03', {
+        kind: 'reminder',
+      }),
+      false,
+    );
+    store.close();
+  });
+});
