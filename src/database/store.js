@@ -2,7 +2,8 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import initSqlJs from 'sql.js';
-import { getDefaultQuestionTopics, normalizeTimeValue } from '../utils/time.js';
+import { DEFAULT_QUESTION_PROMPT } from '../services/ai.js';
+import { normalizeTimeValue } from '../utils/time.js';
 
 const DEFAULT_SETTINGS = {
   personal_channel_owner_id: '',
@@ -10,10 +11,7 @@ const DEFAULT_SETTINGS = {
   timezone: 'UTC',
   bot_display_name: 'Asteria',
   daily_question_enabled: 1,
-  daily_question_topics_json: JSON.stringify(getDefaultQuestionTopics()),
-  daily_question_tone: 'friendly and curious',
-  daily_question_custom_instructions: '',
-  daily_question_custom_topics_text: '',
+  daily_question_prompt: DEFAULT_QUESTION_PROMPT,
   daily_question_include_in_daily_update: 0,
   daily_question_send_time: '09:00',
   daily_question_reply_text: 'Reply to this message in a thread!',
@@ -40,23 +38,6 @@ function parseBoolean(value) {
   return value === 1 || value === '1' || value === true;
 }
 
-function parseJsonArray(text, fallback = []) {
-  if (!text) {
-    return fallback;
-  }
-
-  try {
-    const parsedValue = JSON.parse(text);
-    if (Array.isArray(parsedValue)) {
-      return parsedValue;
-    }
-  } catch {
-    return fallback;
-  }
-
-  return fallback;
-}
-
 function sanitizeSettingsPatch(patch) {
   const sanitizedPatch = { ...patch };
 
@@ -76,13 +57,9 @@ function sanitizeSettingsPatch(patch) {
     sanitizedPatch.daily_update_reminder_time = normalizeTimeValue(sanitizedPatch.daily_update_reminder_time, '17:00');
   }
 
-  if (typeof sanitizedPatch.daily_question_custom_topics_text === 'string') {
-    sanitizedPatch.daily_question_custom_topics_text = sanitizedPatch.daily_question_custom_topics_text.trim();
-  }
-
-  if (Array.isArray(sanitizedPatch.daily_question_topics)) {
-    sanitizedPatch.daily_question_topics_json = JSON.stringify(sanitizedPatch.daily_question_topics);
-    delete sanitizedPatch.daily_question_topics;
+  if ('daily_question_prompt' in sanitizedPatch) {
+    const trimmedPrompt = String(sanitizedPatch.daily_question_prompt ?? '').trim();
+    sanitizedPatch.daily_question_prompt = trimmedPrompt || DEFAULT_QUESTION_PROMPT;
   }
 
   for (const booleanKey of [
@@ -169,10 +146,7 @@ export async function createStore(databasePath, options = {}) {
       timezone TEXT NOT NULL DEFAULT 'UTC',
       bot_display_name TEXT NOT NULL DEFAULT 'Asteria',
       daily_question_enabled INTEGER NOT NULL DEFAULT 1,
-      daily_question_topics_json TEXT NOT NULL DEFAULT '[]',
-      daily_question_tone TEXT NOT NULL DEFAULT 'friendly and curious',
-      daily_question_custom_instructions TEXT NOT NULL DEFAULT '',
-      daily_question_custom_topics_text TEXT NOT NULL DEFAULT '',
+      daily_question_prompt TEXT NOT NULL DEFAULT '',
       daily_question_include_in_daily_update INTEGER NOT NULL DEFAULT 0,
       daily_question_send_time TEXT NOT NULL DEFAULT '09:00',
       daily_question_reply_text TEXT NOT NULL DEFAULT 'Reply to this message in a thread!',
@@ -251,6 +225,14 @@ export async function createStore(databasePath, options = {}) {
   if (!existingSettingColumns.includes('bot_display_name')) {
     bindAndRun(database, "ALTER TABLE app_settings ADD COLUMN bot_display_name TEXT NOT NULL DEFAULT 'Asteria'");
   }
+  if (!existingSettingColumns.includes('daily_question_prompt')) {
+    bindAndRun(database, "ALTER TABLE app_settings ADD COLUMN daily_question_prompt TEXT NOT NULL DEFAULT ''");
+    bindAndRun(
+      database,
+      "UPDATE app_settings SET daily_question_prompt = $prompt WHERE daily_question_prompt = '' OR daily_question_prompt IS NULL",
+      { prompt: DEFAULT_QUESTION_PROMPT },
+    );
+  }
 
   bindAndRun(
     database,
@@ -262,10 +244,7 @@ export async function createStore(databasePath, options = {}) {
       timezone,
       bot_display_name,
       daily_question_enabled,
-      daily_question_topics_json,
-      daily_question_tone,
-      daily_question_custom_instructions,
-      daily_question_custom_topics_text,
+      daily_question_prompt,
       daily_question_include_in_daily_update,
       daily_question_send_time,
       daily_question_reply_text,
@@ -285,10 +264,7 @@ export async function createStore(databasePath, options = {}) {
       $timezone,
       $bot_display_name,
       $daily_question_enabled,
-      $daily_question_topics_json,
-      $daily_question_tone,
-      $daily_question_custom_instructions,
-      $daily_question_custom_topics_text,
+      $daily_question_prompt,
       $daily_question_include_in_daily_update,
       $daily_question_send_time,
       $daily_question_reply_text,
@@ -329,10 +305,7 @@ export async function createStore(databasePath, options = {}) {
         timezone = $timezone,
         bot_display_name = $bot_display_name,
         daily_question_enabled = $daily_question_enabled,
-        daily_question_topics_json = $daily_question_topics_json,
-        daily_question_tone = $daily_question_tone,
-        daily_question_custom_instructions = $daily_question_custom_instructions,
-        daily_question_custom_topics_text = $daily_question_custom_topics_text,
+        daily_question_prompt = $daily_question_prompt,
         daily_question_include_in_daily_update = $daily_question_include_in_daily_update,
         daily_question_send_time = $daily_question_send_time,
         daily_question_reply_text = $daily_question_reply_text,
@@ -484,7 +457,6 @@ export async function createStore(databasePath, options = {}) {
       return {
         ...settingsRow,
         daily_question_enabled: parseBoolean(settingsRow.daily_question_enabled),
-        daily_question_topics: parseJsonArray(settingsRow.daily_question_topics_json, getDefaultQuestionTopics()),
         daily_question_include_in_daily_update: parseBoolean(settingsRow.daily_question_include_in_daily_update),
         welcomer_enabled: parseBoolean(settingsRow.welcomer_enabled),
         daily_update_thread_enabled: parseBoolean(settingsRow.daily_update_thread_enabled),

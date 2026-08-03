@@ -489,7 +489,7 @@ describe('App Home handlers', () => {
     store.close();
   });
 
-  it('sends a test Daily Question when forced from the Daily Question tab', async () => {
+  it('opens the Daily Question test modal with preview and send options', async () => {
     const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'asteria-apphome-'));
     const databasePath = path.join(tempDir, 'asteria.sqlite');
     createdPaths.push(databasePath);
@@ -499,7 +499,62 @@ describe('App Home handlers', () => {
       personal_channel_owner_id: 'UOWNER',
       personal_channel_id: 'C123',
       daily_question_enabled: true,
-      daily_question_tone: 'friendly',
+    });
+
+    const client = createClient();
+    const handlers = createHandlerTestHarness({ store });
+
+    await handlers['action:open_question_test_modal']({
+      ack: mock.fn(),
+      body: { user: { id: 'UOWNER' }, trigger_id: 'trig-9' },
+      client,
+    });
+
+    const callArgs = client.views.open.mock.calls[0].arguments[0];
+    assert.equal(callArgs.view.callback_id, 'test_daily_question_submit');
+    const radio = callArgs.view.blocks.find((block) => block.element?.type === 'radio_buttons');
+    assert(radio);
+    assert.deepEqual(radio.element.options.map((option) => option.value).sort(), ['preview', 'send']);
+    store.close();
+  });
+
+  it('does not let a non-owner open the Daily Question test modal', async () => {
+    const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'asteria-apphome-'));
+    const databasePath = path.join(tempDir, 'asteria.sqlite');
+    createdPaths.push(databasePath);
+
+    const store = await createStore(databasePath);
+    store.updateSettings({ personal_channel_owner_id: 'UOWNER' });
+
+    const client = createClient();
+    const handlers = createHandlerTestHarness({
+      store,
+      aiService: {
+        generateDailyQuestion: mock.fn(),
+      },
+    });
+
+    await handlers['action:open_question_test_modal']({
+      ack: mock.fn(),
+      body: { user: { id: 'UNOTOWNER' }, trigger_id: 'trig-9' },
+      client,
+    });
+
+    assert.equal(client.views.open.mock.callCount(), 0);
+    assert.equal(client.chat.postMessage.mock.callCount(), 0);
+    store.close();
+  });
+
+  it('previews a generated Daily Question without posting or recording it', async () => {
+    const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'asteria-apphome-'));
+    const databasePath = path.join(tempDir, 'asteria.sqlite');
+    createdPaths.push(databasePath);
+
+    const store = await createStore(databasePath);
+    store.updateSettings({
+      personal_channel_owner_id: 'UOWNER',
+      personal_channel_id: 'C123',
+      daily_question_enabled: true,
     });
 
     const client = createClient();
@@ -513,9 +568,68 @@ describe('App Home handlers', () => {
       },
     });
 
-    await handlers['action:force_daily_question']({
+    let ackArgs = null;
+    await handlers['view:test_daily_question_submit']({
+      ack: (args) => {
+        ackArgs = args;
+      },
+      body: { user: { id: 'UOWNER' } },
+      view: {
+        state: {
+          values: {
+            question_test_mode_block: {
+              question_test_mode: { selected_option: { value: 'preview' } },
+            },
+          },
+        },
+      },
+      client,
+      logger: { error: mock.fn() },
+    });
+
+    assert.equal(ackArgs.response_action, 'update');
+    assert.equal(ackArgs.view.callback_id, 'question_preview_view');
+    assert(ackArgs.view.blocks.some((block) => block.text?.text.includes('What are you curious about?')));
+    assert.equal(client.chat.postMessage.mock.callCount(), 0);
+    assert.equal(store.getRecentDailyQuestionTexts(5).length, 0);
+    store.close();
+  });
+
+  it('sends a generated Daily Question to the channel when send is chosen', async () => {
+    const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'asteria-apphome-'));
+    const databasePath = path.join(tempDir, 'asteria.sqlite');
+    createdPaths.push(databasePath);
+
+    const store = await createStore(databasePath);
+    store.updateSettings({
+      personal_channel_owner_id: 'UOWNER',
+      personal_channel_id: 'C123',
+      daily_question_enabled: true,
+    });
+
+    const client = createClient();
+    const handlers = createHandlerTestHarness({
+      store,
+      aiService: {
+        generateDailyQuestion: mock.fn(async () => ({
+          questionText: 'What are you curious about?',
+          questionHash: 'hash123',
+        })),
+      },
+    });
+
+    await handlers['view:test_daily_question_submit']({
       ack: mock.fn(),
       body: { user: { id: 'UOWNER' } },
+      view: {
+        state: {
+          values: {
+            question_test_mode_block: {
+              question_test_mode: { selected_option: { value: 'send' } },
+            },
+          },
+        },
+      },
       client,
       logger: { error: mock.fn() },
     });
@@ -534,30 +648,47 @@ describe('App Home handlers', () => {
     store.close();
   });
 
-  it('does not let a non-owner force a Daily Question', async () => {
+  it('saves the AI prompt from the Daily Question tab', async () => {
     const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'asteria-apphome-'));
     const databasePath = path.join(tempDir, 'asteria.sqlite');
     createdPaths.push(databasePath);
 
     const store = await createStore(databasePath);
-    store.updateSettings({ personal_channel_owner_id: 'UOWNER' });
+    store.updateSettings({
+      personal_channel_owner_id: 'UOWNER',
+      daily_question_enabled: true,
+      daily_question_send_time: '09:00',
+    });
 
     const client = createClient();
-    const handlers = createHandlerTestHarness({
-      store,
-      aiService: {
-        generateDailyQuestion: mock.fn(),
-      },
-    });
+    const handlers = createHandlerTestHarness({ store });
 
-    await handlers['action:force_daily_question']({
+    await handlers['action:save_daily_question_settings']({
       ack: mock.fn(),
-      body: { user: { id: 'UNOTOWNER' } },
+      body: {
+        user: { id: 'UOWNER' },
+        view: {
+          state: {
+            values: {
+              daily_question_enabled_block: {
+                daily_question_enabled: { selected_options: [{ value: 'enabled' }] },
+              },
+              daily_question_prompt_block: {
+                daily_question_prompt: { value: 'Ask a question about sailing in one sentence.' },
+              },
+              daily_question_include_block: { daily_question_include_in_update: { selected_options: [] } },
+              daily_question_send_time_block: { daily_question_send_time: { value: '10:30' } },
+            },
+          },
+        },
+      },
       client,
-      logger: { error: mock.fn() },
     });
 
-    assert.equal(client.chat.postMessage.mock.callCount(), 0);
+    const settings = store.getSettings();
+    assert.equal(settings.daily_question_prompt, 'Ask a question about sailing in one sentence.');
+    assert.equal(settings.daily_question_send_time, '10:30');
+    assert.equal(settings.daily_question_enabled, true);
     store.close();
   });
 
@@ -619,6 +750,38 @@ describe('App Home handlers', () => {
     assert(botNameInput);
     assert.equal(botNameInput.element.action_id, 'bot_display_name');
     assert.equal(botNameInput.element.initial_value, 'Stella');
+    store.close();
+  });
+
+  it('shows the editable AI prompt and no topic selectors in the Daily Question tab', async () => {
+    const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'asteria-apphome-'));
+    const databasePath = path.join(tempDir, 'asteria.sqlite');
+    createdPaths.push(databasePath);
+
+    const store = await createStore(databasePath);
+    store.updateSettings({ personal_channel_owner_id: 'UOWNER' });
+
+    const client = createClient();
+    const handlers = createHandlerTestHarness({ store });
+
+    await handlers.publishTab(client, 'UOWNER', 'daily-question');
+
+    const publishArgs = client.views.publish.mock.calls[0].arguments[0];
+    const viewJson = JSON.stringify(publishArgs.view);
+    assert(!viewJson.includes('multi_static_select'));
+    assert(!viewJson.includes('daily_question_tone'));
+    assert(!viewJson.includes('daily_question_custom_instructions'));
+
+    const promptInput = publishArgs.view.blocks.find((block) => block.block_id === 'daily_question_prompt_block');
+    assert(promptInput);
+    assert.equal(promptInput.element.action_id, 'daily_question_prompt');
+    assert.equal(promptInput.element.multiline, true);
+    assert(promptInput.element.initial_value.length > 0);
+
+    const testButton = publishArgs.view.blocks.find((block) =>
+      block.elements?.some((element) => element.action_id === 'open_question_test_modal'),
+    );
+    assert(testButton);
     store.close();
   });
 });

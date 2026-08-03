@@ -1,19 +1,6 @@
+import { DEFAULT_QUESTION_PROMPT } from '../services/ai.js';
 import { contentToMrkdwn } from '../utils/messages.js';
-import { getDefaultQuestionTopics, normalizeTimeValue } from '../utils/time.js';
-
-const QUESTION_TOPIC_OPTIONS = [
-  'fun',
-  'school',
-  'technology',
-  'creativity',
-  'music',
-  'swimming',
-  'food',
-  'hobbies',
-  'random',
-  'deep questions',
-  'hypothetical questions',
-];
+import { normalizeTimeValue } from '../utils/time.js';
 
 function toBooleanString(value) {
   return value ? 'ON' : 'OFF';
@@ -245,11 +232,6 @@ function buildDailyUpdateView({ settings, draft, questionPreview, notice }) {
 }
 
 function buildDailyQuestionView({ settings, notice, recentQuestions }) {
-  const availableTopics = QUESTION_TOPIC_OPTIONS;
-  const selectedTopics = new Set(
-    (settings.daily_question_topics || getDefaultQuestionTopics()).map((topic) => topic.trim().toLowerCase()),
-  );
-
   return {
     type: 'home',
     callback_id: 'asteria_home_daily_question',
@@ -261,7 +243,7 @@ function buildDailyQuestionView({ settings, notice, recentQuestions }) {
         type: 'section',
         text: {
           type: 'mrkdwn',
-          text: 'Configure the AI-powered Daily Question that Asteria sends automatically each day.',
+          text: 'Write the AI prompt and configure when Asteria posts a Daily Question each day.',
         },
       },
       {
@@ -298,83 +280,30 @@ function buildDailyQuestionView({ settings, notice, recentQuestions }) {
       },
       {
         type: 'input',
-        block_id: 'daily_question_topics_block',
+        block_id: 'daily_question_prompt_block',
         label: {
           type: 'plain_text',
-          text: 'Question topics',
-        },
-        element: {
-          type: 'multi_static_select',
-          action_id: 'daily_question_topics',
-          placeholder: {
-            type: 'plain_text',
-            text: 'Choose one or more topics',
-          },
-          options: availableTopics.map((topic) => ({
-            text: { type: 'plain_text', text: topic },
-            value: topic,
-          })),
-          initial_options: availableTopics
-            .filter((topic) => selectedTopics.has(topic.toLowerCase()))
-            .map((topic) => ({
-              text: { type: 'plain_text', text: topic },
-              value: topic,
-            })),
-        },
-      },
-      {
-        type: 'input',
-        block_id: 'daily_question_custom_topics_block',
-        optional: true,
-        label: {
-          type: 'plain_text',
-          text: 'Additional topics',
+          text: 'AI prompt',
         },
         element: {
           type: 'plain_text_input',
-          action_id: 'daily_question_custom_topics',
-          initial_value: settings.daily_question_custom_topics_text || '',
-          placeholder: {
-            type: 'plain_text',
-            text: 'Optional comma-separated extras like robotics, art, or hikes',
-          },
-        },
-      },
-      {
-        type: 'input',
-        block_id: 'daily_question_tone_block',
-        label: {
-          type: 'plain_text',
-          text: 'Tone',
-        },
-        element: {
-          type: 'plain_text_input',
-          action_id: 'daily_question_tone',
-          initial_value: settings.daily_question_tone || '',
-          placeholder: {
-            type: 'plain_text',
-            text: 'For example: friendly, playful, and concise',
-          },
-        },
-      },
-      {
-        type: 'input',
-        block_id: 'daily_question_custom_instructions_block',
-        optional: true,
-        label: {
-          type: 'plain_text',
-          text: 'Custom instructions',
-        },
-        element: {
-          type: 'plain_text_input',
-          action_id: 'daily_question_custom_instructions',
+          action_id: 'daily_question_prompt',
           multiline: true,
-          initial_value: settings.daily_question_custom_instructions || '',
+          initial_value: settings.daily_question_prompt || DEFAULT_QUESTION_PROMPT,
           placeholder: {
             type: 'plain_text',
-            text: 'Add extra guidance for the AI here',
+            text: 'Write the full prompt that is sent to the AI',
           },
         },
+      },
+      {
+        type: 'context',
+        elements: [
+          {
+            type: 'mrkdwn',
+            text: 'This prompt is sent to the AI exactly as you write it — no tags or variables are inserted.',
+          },
+        ],
       },
       {
         type: 'input',
@@ -450,8 +379,8 @@ function buildDailyQuestionView({ settings, notice, recentQuestions }) {
           },
           {
             type: 'button',
-            action_id: 'force_daily_question',
-            text: { type: 'plain_text', text: 'Send a Test Daily Question Now' },
+            action_id: 'open_question_test_modal',
+            text: { type: 'plain_text', text: 'Test Daily Question' },
           },
         ],
       },

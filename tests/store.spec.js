@@ -4,6 +4,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { afterEach, describe, it } from 'node:test';
 import { createStore } from '../src/database/store.js';
+import { DEFAULT_QUESTION_PROMPT } from '../src/services/ai.js';
 
 let createdPaths = [];
 
@@ -74,6 +75,24 @@ describe('Asteria store', () => {
     assert.equal(store.getSettings().bot_display_name, 'Star');
     store.updateSettings({ bot_display_name: '   ' });
     assert.equal(store.getSettings().bot_display_name, 'Asteria');
+    store.close();
+  });
+
+  it('defaults, persists, and falls back the Daily Question prompt', async () => {
+    const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'asteria-store-'));
+    const databasePath = path.join(tempDir, 'asteria.sqlite');
+    createdPaths.push(databasePath);
+
+    let store = await createStore(databasePath);
+    assert.equal(store.getSettings().daily_question_prompt, DEFAULT_QUESTION_PROMPT);
+    store.updateSettings({ daily_question_prompt: 'Ask about robotics in one sentence.' });
+    assert.equal(store.getSettings().daily_question_prompt, 'Ask about robotics in one sentence.');
+    store.close();
+
+    store = await createStore(databasePath);
+    assert.equal(store.getSettings().daily_question_prompt, 'Ask about robotics in one sentence.');
+    store.updateSettings({ daily_question_prompt: '   ' });
+    assert.equal(store.getSettings().daily_question_prompt, DEFAULT_QUESTION_PROMPT);
     store.close();
   });
 

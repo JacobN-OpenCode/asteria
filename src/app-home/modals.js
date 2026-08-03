@@ -208,3 +208,81 @@ export function buildPersonalChannelModal({ settings }) {
     ],
   };
 }
+
+export function buildQuestionTestModal() {
+  return {
+    type: 'modal',
+    callback_id: 'test_daily_question_submit',
+    title: { type: 'plain_text', text: 'Test Daily Question' },
+    submit: { type: 'plain_text', text: 'Generate' },
+    close: { type: 'plain_text', text: 'Cancel' },
+    blocks: [
+      {
+        type: 'context',
+        elements: [
+          {
+            type: 'mrkdwn',
+            text: 'Generates a new question from your AI prompt, then either shows it to you or posts it to the personal channel.',
+          },
+        ],
+      },
+      {
+        type: 'input',
+        block_id: 'question_test_mode_block',
+        label: { type: 'plain_text', text: 'What should happen with the question?' },
+        element: {
+          type: 'radio_buttons',
+          action_id: 'question_test_mode',
+          options: [
+            {
+              text: { type: 'plain_text', text: 'Preview only — just show me the output' },
+              value: 'preview',
+            },
+            {
+              text: { type: 'plain_text', text: 'Send it to the personal channel' },
+              value: 'send',
+            },
+          ],
+          initial_option: {
+            text: { type: 'plain_text', text: 'Preview only — just show me the output' },
+            value: 'preview',
+          },
+        },
+      },
+    ],
+  };
+}
+
+export function buildQuestionPreviewModal({ questionText }) {
+  return {
+    type: 'modal',
+    callback_id: 'question_preview_view',
+    title: { type: 'plain_text', text: 'Daily Question Preview' },
+    close: { type: 'plain_text', text: 'Close' },
+    blocks: [
+      {
+        type: 'section',
+        text: { type: 'mrkdwn', text: questionText || '_No question was generated._' },
+      },
+      {
+        type: 'context',
+        elements: [
+          {
+            type: 'mrkdwn',
+            text: 'This is only a preview. Nothing was posted to the channel.',
+          },
+        ],
+      },
+    ],
+  };
+}
+
+export function buildQuestionTestErrorModal({ text }) {
+  return {
+    type: 'modal',
+    callback_id: 'question_test_error_view',
+    title: { type: 'plain_text', text: 'Test Daily Question' },
+    close: { type: 'plain_text', text: 'Close' },
+    blocks: [{ type: 'section', text: { type: 'mrkdwn', text } }],
+  };
+}

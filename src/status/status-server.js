@@ -6,7 +6,7 @@ import { buildStatusRss, readStatusEvents } from './status-core.js';
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
 const eventsFilePath = process.env.ASTERIA_STATUS_FILE || path.join(repoRoot, 'data', 'status-events.json');
 const port = Number(process.env.ASTERIA_STATUS_PORT || 8787);
-const siteUrl = process.env.ASTERIA_STATUS_URL || 'https://asteria.mini-jacob.hackclub.app';
+const siteUrl = process.env.ASTERIA_STATUS_URL || 'http://localhost';
 
 const server = http.createServer((req, res) => {
   const url = new URL(req.url, siteUrl);

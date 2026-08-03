@@ -44,14 +44,14 @@ describe('status core', () => {
 
     const rss = buildStatusRss({
       events: readStatusEvents(filePath),
-      siteUrl: 'https://asteria.mini-jacob.hackclub.app',
+      siteUrl: 'https://example.com',
     });
 
     assert(rss.includes('<rss version="2.0"'));
     assert(rss.includes('<title>Asteria is currently down</title>'));
     assert(rss.includes('<title>Asteria is up</title>'));
     assert(rss.includes('<title>Asteria is down</title>'));
-    assert(rss.includes('<link>https://asteria.mini-jacob.hackclub.app/</link>'));
+    assert(rss.includes('<link>https://example.com/</link>'));
     assert(rss.includes('<guid isPermaLink="false">asteria-status-current</guid>'));
     assert(rss.includes('application/rss+xml'));
   });
@@ -60,7 +60,7 @@ describe('status core', () => {
     const filePath = tempStatusFile();
     const rss = buildStatusRss({
       events: readStatusEvents(filePath),
-      siteUrl: 'https://asteria.mini-jacob.hackclub.app',
+      siteUrl: 'https://example.com',
     });
     assert(rss.includes('<title>Asteria is currently unknown</title>'));
     assert.equal((rss.match(/<item>/g) || []).length, 1);

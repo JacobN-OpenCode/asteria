@@ -1,6 +1,22 @@
 import crypto from 'node:crypto';
 import { formatDailyQuestionMessage, isRepeatedQuestion, normalizeQuestionText } from '../utils/messages.js';
 
+export const DEFAULT_QUESTION_PROMPT = `You are a friendly Slack companion bot for a Hack Club community channel.
+
+Write exactly one short, fun, community-appropriate question that people in the channel will want to answer.
+
+Rules:
+- Return only the question text, with no bullets, no numbering, no markdown formatting, and no preamble.
+- Keep the question general enough for a Hack Club community setting.
+- Do not write anything overly personal, discriminatory, dangerous, or repetitive.`;
+
+const FALLBACK_QUESTIONS = [
+  'What is one small win you had recently?',
+  'What is something you are curious about right now?',
+  'If you could make today more fun, what would you change?',
+  'What is your favorite thing you have learned lately?',
+];
+
 function safeTrim(value) {
   if (typeof value !== 'string') {
     return '';
@@ -9,16 +25,8 @@ function safeTrim(value) {
   return value.trim();
 }
 
-function createFallbackQuestion(topics) {
-  const topic = Array.isArray(topics) && topics.length > 0 ? topics[0] : 'today';
-  const fallbackQuestions = [
-    `What is one small win you had related to ${topic}?`,
-    `What is something about ${topic} that you are curious about right now?`,
-    `If you could make ${topic} more fun, what would you change?`,
-    `What is your favorite thing you have learned about ${topic} lately?`,
-  ];
-
-  return fallbackQuestions[Math.floor(Math.random() * fallbackQuestions.length)];
+function createFallbackQuestion() {
+  return FALLBACK_QUESTIONS[Math.floor(Math.random() * FALLBACK_QUESTIONS.length)];
 }
 
 function cleanAiQuestionText(rawText) {
@@ -74,31 +82,16 @@ export function createHackClubAiService({ apiKey, baseUrl, model, logger }) {
   }
 
   return {
-    async generateDailyQuestion({ topics, tone, customInstructions, recentQuestions, botName = 'Asteria' }) {
+    async generateDailyQuestion({ prompt, recentQuestions }) {
       const recentList = Array.isArray(recentQuestions) ? recentQuestions.slice(0, 8) : [];
-      const recentListText =
-        recentList.length > 0
-          ? `Avoid repeating these recent questions:\n${recentList.map((question) => `- ${question}`).join('\n')}`
-          : '';
-      const prompt = [
-        `You are ${safeTrim(botName) || 'Asteria'}, a Slack companion bot for a Hack Club personal channel.`,
-        'Write exactly one friendly, safe, community-appropriate question.',
-        'Return only the question text with no bullets, no numbering, no markdown fence, and no preamble.',
-        'The question should fit a general Hack Club/community setting and should not be overly personal, discriminatory, dangerous, or repetitive.',
-        `Tone: ${safeTrim(tone) || 'friendly and curious'}.`,
-        `Topics: ${(topics || []).filter(Boolean).join(', ') || 'general community conversation'}.`,
-        customInstructions ? `Custom instructions: ${safeTrim(customInstructions)}` : '',
-        recentListText,
-      ]
-        .filter(Boolean)
-        .join('\n');
+      const effectivePrompt = safeTrim(prompt) || DEFAULT_QUESTION_PROMPT;
 
       const messages = [
         {
           role: 'system',
           content: 'You generate one concise Slack question and nothing else.',
         },
-        { role: 'user', content: prompt },
+        { role: 'user', content: effectivePrompt },
       ];
 
       let questionText = '';
@@ -118,12 +111,12 @@ export function createHackClubAiService({ apiKey, baseUrl, model, logger }) {
 
         messages[1] = {
           role: 'user',
-          content: `${prompt}\n\nThe last attempt was too similar or invalid. Try a different question.`,
+          content: `${effectivePrompt}\n\nThe last attempt was too similar or invalid. Try a different question.`,
         };
       }
 
       if (!questionText || isRepeatedQuestion(questionText, recentList)) {
-        questionText = createFallbackQuestion(topics);
+        questionText = createFallbackQuestion();
       }
 
       const questionHash = crypto.createHash('sha256').update(questionText).digest('hex');

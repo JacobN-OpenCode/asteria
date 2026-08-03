@@ -1,33 +1,6 @@
 import { sendDailyQuestion, sendDirectMessage } from './services/slack.js';
 import { getLocalDateKey, isDueAtClock } from './utils/time.js';
 
-function splitTopicsText(topicText) {
-  return String(topicText || '')
-    .split(',')
-    .map((topic) => topic.trim())
-    .filter(Boolean);
-}
-
-export const DEFAULT_QUESTION_TOPICS = [
-  'fun',
-  'school',
-  'technology',
-  'creativity',
-  'music',
-  'food',
-  'hobbies',
-  'random',
-];
-
-export function buildDailyQuestionTopics(settings) {
-  return [
-    ...new Set([
-      ...(settings.daily_question_topics || []),
-      ...splitTopicsText(settings.daily_question_custom_topics_text),
-    ]),
-  ];
-}
-
 function buildQuestionJobKey(localDate) {
   return `daily-question:${localDate}`;
 }
@@ -50,17 +23,11 @@ export function createScheduler({ store, aiService, client, logger, environment 
       return;
     }
 
-    const combinedTopics = buildDailyQuestionTopics(settings);
-    const topicsForPrompt = combinedTopics.length > 0 ? combinedTopics : DEFAULT_QUESTION_TOPICS;
-
     try {
       const recentQuestions = store.getRecentDailyQuestionTexts(5);
       const aiResult = await aiService.generateDailyQuestion({
-        topics: topicsForPrompt,
-        tone: settings.daily_question_tone,
-        customInstructions: settings.daily_question_custom_instructions,
+        prompt: settings.daily_question_prompt,
         recentQuestions,
-        botName: settings.bot_display_name,
       });
 
       const shouldPostSeparately = !settings.daily_question_include_in_daily_update;
@@ -69,9 +36,9 @@ export function createScheduler({ store, aiService, client, logger, environment 
       store.recordDailyQuestion({
         localDate,
         questionText: aiResult.questionText,
-        topics: combinedTopics,
-        tone: settings.daily_question_tone,
-        customInstructions: settings.daily_question_custom_instructions,
+        topics: [],
+        tone: '',
+        customInstructions: '',
         questionHash: aiResult.questionHash,
         messageTs: response?.messageTs ?? null,
         sentAtUtc: response ? new Date().toISOString() : null,

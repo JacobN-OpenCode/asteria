@@ -52,7 +52,3 @@ export function isDueAtClock(now, timeZone, timeValue) {
 export function formatClockLabel(timeValue) {
   return normalizeTimeValue(timeValue, '09:00');
 }
-
-export function getDefaultQuestionTopics() {
-  return ['fun', 'school', 'technology', 'creativity', 'music', 'food', 'hobbies', 'random'];
-}

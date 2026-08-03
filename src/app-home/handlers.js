@@ -1,4 +1,3 @@
-import { buildDailyQuestionTopics, DEFAULT_QUESTION_TOPICS } from '../scheduler.js';
 import { fetchUserGroups, sendDailyQuestion, sendDailyUpdate, sendWelcomeMessage } from '../services/slack.js';
 import { contentToMrkdwn, formatDailyQuestionMessage } from '../utils/messages.js';
 import { getLocalDateKey, isValidTimeZone, normalizeTimeValue } from '../utils/time.js';
@@ -6,6 +5,9 @@ import {
   buildDailyUpdateModal,
   buildPersonalChannelModal,
   buildPingGroupModal,
+  buildQuestionPreviewModal,
+  buildQuestionTestErrorModal,
+  buildQuestionTestModal,
   buildThreadMessageModal,
   buildWelcomeMessageModal,
 } from './modals.js';
@@ -33,10 +35,6 @@ function getStaticSelectValue(viewState, blockId, actionId) {
 
 function getConversationSelectValue(viewState, blockId, actionId) {
   return viewState?.[blockId]?.[actionId]?.selected_conversation ?? '';
-}
-
-function getMultiSelectValues(viewState, blockId, actionId) {
-  return (viewState?.[blockId]?.[actionId]?.selected_options ?? []).map((option) => option.value);
 }
 
 async function publishHome(client, userId, view) {
@@ -337,24 +335,10 @@ export function createHomeHandlers({ app, store, aiService }) {
     }
 
     const viewState = body.view.state.values;
-    const selectedTopics = getMultiSelectValues(viewState, 'daily_question_topics_block', 'daily_question_topics');
-    const customTopicsText = getInputValue(
-      viewState,
-      'daily_question_custom_topics_block',
-      'daily_question_custom_topics',
-    );
 
     store.updateSettings({
       daily_question_enabled: getCheckboxEnabled(viewState, 'daily_question_enabled_block', 'daily_question_enabled'),
-      daily_question_topics: selectedTopics,
-      daily_question_tone:
-        getInputValue(viewState, 'daily_question_tone_block', 'daily_question_tone') || 'friendly and curious',
-      daily_question_custom_instructions: getInputValue(
-        viewState,
-        'daily_question_custom_instructions_block',
-        'daily_question_custom_instructions',
-      ),
-      daily_question_custom_topics_text: customTopicsText,
+      daily_question_prompt: getInputValue(viewState, 'daily_question_prompt_block', 'daily_question_prompt'),
       daily_question_include_in_daily_update: getCheckboxEnabled(
         viewState,
         'daily_question_include_block',
@@ -369,47 +353,75 @@ export function createHomeHandlers({ app, store, aiService }) {
     await publishTab(client, body.user.id, 'daily-question', ':white_check_mark: Daily Question settings saved.');
   }
 
-  async function handleForceDailyQuestion({ ack, body, client, logger }) {
+  async function handleOpenQuestionTestModal({ ack, body, client }) {
     await ack();
+    if (!isOwner(body.user.id)) {
+      return;
+    }
+
+    await openModal(client, body.trigger_id, buildQuestionTestModal());
+  }
+
+  async function handleQuestionTestSubmit({ ack, body, view, client, logger }) {
     const settings = store.getSettings();
     if (body.user.id !== settings.personal_channel_owner_id) {
-      await publishTab(client, body.user.id, 'daily-question', ':warning: Only the configured owner can do that.');
+      await ack();
       return;
     }
 
     if (!settings.personal_channel_id) {
-      await publishTab(
-        client,
-        body.user.id,
-        'daily-question',
-        ':x: Configure the personal channel first before testing the Daily Question.',
-      );
+      await ack({
+        response_action: 'update',
+        view: buildQuestionTestErrorModal({
+          text: ':x: Configure the personal channel in Settings before testing the Daily Question.',
+        }),
+      });
       return;
     }
 
     if (!aiService) {
-      await publishTab(client, body.user.id, 'daily-question', ':x: The AI service is not available.');
+      await ack({
+        response_action: 'update',
+        view: buildQuestionTestErrorModal({ text: ':x: The AI service is not available.' }),
+      });
       return;
     }
 
+    const viewState = view.state.values;
+    const mode = getStaticSelectValue(viewState, 'question_test_mode_block', 'question_test_mode') || 'preview';
+
+    let aiResult;
     try {
-      const combinedTopics = buildDailyQuestionTopics(settings);
-      const topicsForPrompt = combinedTopics.length > 0 ? combinedTopics : DEFAULT_QUESTION_TOPICS;
-      const recentQuestions = store.getRecentDailyQuestionTexts(5);
-      const aiResult = await aiService.generateDailyQuestion({
-        topics: topicsForPrompt,
-        tone: settings.daily_question_tone,
-        customInstructions: settings.daily_question_custom_instructions,
-        recentQuestions,
-        botName: settings.bot_display_name,
+      aiResult = await aiService.generateDailyQuestion({
+        prompt: settings.daily_question_prompt,
+        recentQuestions: store.getRecentDailyQuestionTexts(5),
       });
+    } catch (error) {
+      logger.error('Failed to generate a test Daily Question', error);
+      await ack({
+        response_action: 'update',
+        view: buildQuestionTestErrorModal({ text: ':x: Could not generate a question. Please try again.' }),
+      });
+      return;
+    }
+
+    if (mode === 'preview') {
+      await ack({
+        response_action: 'update',
+        view: buildQuestionPreviewModal({ questionText: aiResult.questionText }),
+      });
+      return;
+    }
+
+    await ack();
+    try {
       const response = await sendDailyQuestion(client, settings, aiResult.questionText);
       store.recordDailyQuestion({
         localDate: getLocalDateKey(new Date(), settings.timezone),
         questionText: aiResult.questionText,
-        topics: combinedTopics,
-        tone: settings.daily_question_tone,
-        customInstructions: settings.daily_question_custom_instructions,
+        topics: [],
+        tone: '',
+        customInstructions: '',
         questionHash: aiResult.questionHash,
         messageTs: response.messageTs,
         sentAtUtc: new Date().toISOString(),
@@ -547,7 +559,8 @@ export function createHomeHandlers({ app, store, aiService }) {
   app.options('select_ping_user_group', handlePingGroupOptions);
   app.action('send_daily_update', handleSendDailyUpdate);
   app.action('save_daily_question_settings', handleSaveDailyQuestionSettings);
-  app.action('force_daily_question', handleForceDailyQuestion);
+  app.action('open_question_test_modal', handleOpenQuestionTestModal);
+  app.view('test_daily_question_submit', handleQuestionTestSubmit);
   app.action('save_welcomer_settings', handleSaveWelcomerSettings);
   app.action('save_general_settings', handleSaveGeneralSettings);
   app.view('compose_daily_update_submit', handleComposeDailyUpdateSubmit);
