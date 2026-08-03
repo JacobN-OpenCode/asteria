@@ -111,13 +111,11 @@ function buildDailyUpdateIdentity(ownerIdentity) {
   if (ownerIdentity.displayName) {
     return {
       username: ownerIdentity.displayName,
-      icon_emoji: ':sparkles:',
     };
   }
 
   return {
     username: 'Asteria',
-    icon_emoji: ':sparkles:',
   };
 }
 
@@ -139,7 +137,6 @@ export async function sendDailyUpdate(client, settings, draft, questionText, { s
       channel: settings.personal_channel_id,
       text: followUpMessage,
       username: 'Asteria',
-      icon_emoji: ':sparkles:',
     });
 
     threadTs = followUpResponse.ts || response.ts;
@@ -160,7 +157,6 @@ export async function sendDailyQuestion(client, settings, questionText) {
     channel: settings.personal_channel_id,
     text,
     username: 'Asteria',
-    icon_emoji: ':sparkles:',
   });
 
   return {
@@ -181,7 +177,6 @@ export async function sendWelcomeMessage(client, settings, { userId }) {
     channel: settings.personal_channel_id,
     text: messageParts.join('\n\n'),
     username: 'Asteria',
-    icon_emoji: ':sparkles:',
   });
 
   return response;

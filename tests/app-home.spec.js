@@ -15,7 +15,7 @@ afterEach(() => {
   createdPaths = [];
 });
 
-function createHandlerTestHarness({ store }) {
+function createHandlerTestHarness({ store, aiService }) {
   const handlers = {};
   const app = {
     action: (actionId, handler) => {
@@ -32,7 +32,7 @@ function createHandlerTestHarness({ store }) {
     },
     error: mock.fn(),
   };
-  const { publishTab } = createHomeHandlers({ app, store });
+  const { publishTab } = createHomeHandlers({ app, store, aiService });
   return { ...handlers, publishTab };
 }
 
@@ -486,6 +486,78 @@ describe('App Home handlers', () => {
     });
 
     assert.equal(store.getSettings().daily_update_ping_user_group_id, 'S999');
+    store.close();
+  });
+
+  it('sends a test Daily Question when forced from the Daily Question tab', async () => {
+    const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'asteria-apphome-'));
+    const databasePath = path.join(tempDir, 'asteria.sqlite');
+    createdPaths.push(databasePath);
+
+    const store = await createStore(databasePath);
+    store.updateSettings({
+      personal_channel_owner_id: 'UOWNER',
+      personal_channel_id: 'C123',
+      daily_question_enabled: true,
+      daily_question_tone: 'friendly',
+    });
+
+    const client = createClient();
+    const handlers = createHandlerTestHarness({
+      store,
+      aiService: {
+        generateDailyQuestion: mock.fn(async () => ({
+          questionText: 'What are you curious about?',
+          questionHash: 'hash123',
+        })),
+      },
+    });
+
+    await handlers['action:force_daily_question']({
+      ack: mock.fn(),
+      body: { user: { id: 'UOWNER' } },
+      client,
+      logger: { error: mock.fn() },
+    });
+
+    assert.equal(client.chat.postMessage.mock.callCount(), 1);
+    const callArgs = client.chat.postMessage.mock.calls[0].arguments[0];
+    assert(callArgs.text.includes('❓ Daily Question'));
+    assert(callArgs.text.includes('What are you curious about?'));
+    assert.equal(callArgs.icon_emoji, undefined);
+
+    const recentQuestions = store.getRecentDailyQuestionTexts(5);
+    assert(recentQuestions.some((question) => question.includes('What are you curious about?')));
+
+    const publishArgs = client.views.publish.mock.calls[0].arguments[0];
+    assert(publishArgs.view.blocks.some((block) => block.elements?.[0]?.text?.includes('Test Daily Question sent')));
+    store.close();
+  });
+
+  it('does not let a non-owner force a Daily Question', async () => {
+    const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'asteria-apphome-'));
+    const databasePath = path.join(tempDir, 'asteria.sqlite');
+    createdPaths.push(databasePath);
+
+    const store = await createStore(databasePath);
+    store.updateSettings({ personal_channel_owner_id: 'UOWNER' });
+
+    const client = createClient();
+    const handlers = createHandlerTestHarness({
+      store,
+      aiService: {
+        generateDailyQuestion: mock.fn(),
+      },
+    });
+
+    await handlers['action:force_daily_question']({
+      ack: mock.fn(),
+      body: { user: { id: 'UNOTOWNER' } },
+      client,
+      logger: { error: mock.fn() },
+    });
+
+    assert.equal(client.chat.postMessage.mock.callCount(), 0);
     store.close();
   });
 });

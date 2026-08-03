@@ -8,6 +8,26 @@ function splitTopicsText(topicText) {
     .filter(Boolean);
 }
 
+export const DEFAULT_QUESTION_TOPICS = [
+  'fun',
+  'school',
+  'technology',
+  'creativity',
+  'music',
+  'food',
+  'hobbies',
+  'random',
+];
+
+export function buildDailyQuestionTopics(settings) {
+  return [
+    ...new Set([
+      ...(settings.daily_question_topics || []),
+      ...splitTopicsText(settings.daily_question_custom_topics_text),
+    ]),
+  ];
+}
+
 function buildQuestionJobKey(localDate) {
   return `daily-question:${localDate}`;
 }
@@ -30,16 +50,8 @@ export function createScheduler({ store, aiService, client, logger, environment 
       return;
     }
 
-    const combinedTopics = [
-      ...new Set([
-        ...(settings.daily_question_topics || []),
-        ...splitTopicsText(settings.daily_question_custom_topics_text),
-      ]),
-    ];
-    const topicsForPrompt =
-      combinedTopics.length > 0
-        ? combinedTopics
-        : ['fun', 'school', 'technology', 'creativity', 'music', 'food', 'hobbies', 'random'];
+    const combinedTopics = buildDailyQuestionTopics(settings);
+    const topicsForPrompt = combinedTopics.length > 0 ? combinedTopics : DEFAULT_QUESTION_TOPICS;
 
     try {
       const recentQuestions = store.getRecentDailyQuestionTexts(5);
@@ -50,7 +62,9 @@ export function createScheduler({ store, aiService, client, logger, environment 
         recentQuestions,
       });
 
-      const response = await sendDailyQuestion(client, settings, aiResult.questionText);
+      const shouldPostSeparately = !settings.daily_question_include_in_daily_update;
+      const response = shouldPostSeparately ? await sendDailyQuestion(client, settings, aiResult.questionText) : null;
+
       store.recordDailyQuestion({
         localDate,
         questionText: aiResult.questionText,
@@ -58,12 +72,12 @@ export function createScheduler({ store, aiService, client, logger, environment 
         tone: settings.daily_question_tone,
         customInstructions: settings.daily_question_custom_instructions,
         questionHash: aiResult.questionHash,
-        messageTs: response.messageTs,
-        sentAtUtc: new Date().toISOString(),
+        messageTs: response?.messageTs ?? null,
+        sentAtUtc: response ? new Date().toISOString() : null,
       });
 
       store.completeScheduledJob(jobKey, localDate, {
-        messageTs: response.messageTs,
+        ...(response ? { messageTs: response.messageTs } : { skipped: true, reason: 'included-in-daily-update' }),
         questionText: aiResult.questionText,
       });
     } catch (error) {

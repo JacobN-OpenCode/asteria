@@ -448,6 +448,11 @@ function buildDailyQuestionView({ settings, notice, recentQuestions }) {
             text: { type: 'plain_text', text: 'Save Daily Question Settings' },
             style: 'primary',
           },
+          {
+            type: 'button',
+            action_id: 'force_daily_question',
+            text: { type: 'plain_text', text: 'Send a Test Daily Question Now' },
+          },
         ],
       },
     ],

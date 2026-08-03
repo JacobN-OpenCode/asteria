@@ -1,4 +1,5 @@
-import { fetchUserGroups, sendDailyUpdate, sendWelcomeMessage } from '../services/slack.js';
+import { buildDailyQuestionTopics, DEFAULT_QUESTION_TOPICS } from '../scheduler.js';
+import { fetchUserGroups, sendDailyQuestion, sendDailyUpdate, sendWelcomeMessage } from '../services/slack.js';
 import { contentToMrkdwn, formatDailyQuestionMessage } from '../utils/messages.js';
 import { getLocalDateKey, isValidTimeZone, normalizeTimeValue } from '../utils/time.js';
 import {
@@ -52,7 +53,7 @@ async function openModal(client, triggerId, view) {
   });
 }
 
-export function createHomeHandlers({ app, store }) {
+export function createHomeHandlers({ app, store, aiService }) {
   async function publishTab(client, userId, tab, notice = '') {
     const settings = store.getSettings();
     const draft = store.getDraft();
@@ -368,6 +369,57 @@ export function createHomeHandlers({ app, store }) {
     await publishTab(client, body.user.id, 'daily-question', ':white_check_mark: Daily Question settings saved.');
   }
 
+  async function handleForceDailyQuestion({ ack, body, client, logger }) {
+    await ack();
+    const settings = store.getSettings();
+    if (body.user.id !== settings.personal_channel_owner_id) {
+      await publishTab(client, body.user.id, 'daily-question', ':warning: Only the configured owner can do that.');
+      return;
+    }
+
+    if (!settings.personal_channel_id) {
+      await publishTab(
+        client,
+        body.user.id,
+        'daily-question',
+        ':x: Configure the personal channel first before testing the Daily Question.',
+      );
+      return;
+    }
+
+    if (!aiService) {
+      await publishTab(client, body.user.id, 'daily-question', ':x: The AI service is not available.');
+      return;
+    }
+
+    try {
+      const combinedTopics = buildDailyQuestionTopics(settings);
+      const topicsForPrompt = combinedTopics.length > 0 ? combinedTopics : DEFAULT_QUESTION_TOPICS;
+      const recentQuestions = store.getRecentDailyQuestionTexts(5);
+      const aiResult = await aiService.generateDailyQuestion({
+        topics: topicsForPrompt,
+        tone: settings.daily_question_tone,
+        customInstructions: settings.daily_question_custom_instructions,
+        recentQuestions,
+      });
+      const response = await sendDailyQuestion(client, settings, aiResult.questionText);
+      store.recordDailyQuestion({
+        localDate: getLocalDateKey(new Date(), settings.timezone),
+        questionText: aiResult.questionText,
+        topics: combinedTopics,
+        tone: settings.daily_question_tone,
+        customInstructions: settings.daily_question_custom_instructions,
+        questionHash: aiResult.questionHash,
+        messageTs: response.messageTs,
+        sentAtUtc: new Date().toISOString(),
+      });
+      await publishTab(client, body.user.id, 'daily-question', ':white_check_mark: Test Daily Question sent.');
+    } catch (error) {
+      logger.error('Failed to send a test Daily Question', error);
+      await publishTab(client, body.user.id, 'daily-question', ':x: Asteria could not send the test Daily Question.');
+    }
+  }
+
   async function handleSaveWelcomerSettings({ ack, body, client }) {
     await ack();
     const settings = store.getSettings();
@@ -493,6 +545,7 @@ export function createHomeHandlers({ app, store }) {
   app.options('select_ping_user_group', handlePingGroupOptions);
   app.action('send_daily_update', handleSendDailyUpdate);
   app.action('save_daily_question_settings', handleSaveDailyQuestionSettings);
+  app.action('force_daily_question', handleForceDailyQuestion);
   app.action('save_welcomer_settings', handleSaveWelcomerSettings);
   app.action('save_general_settings', handleSaveGeneralSettings);
   app.view('compose_daily_update_submit', handleComposeDailyUpdateSubmit);

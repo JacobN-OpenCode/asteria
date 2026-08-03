@@ -84,7 +84,7 @@ describe('Daily Update owner masking', () => {
 
     const callArgs = client.chat.postMessage.mock.calls[0].arguments[0];
     assert.equal(callArgs.username, 'Asteria');
-    assert.equal(callArgs.icon_emoji, ':sparkles:');
+    assert.equal(callArgs.icon_emoji, undefined);
     assert.equal(callArgs.icon_url, undefined);
   });
 
@@ -129,6 +129,7 @@ describe('Daily Update owner masking', () => {
     const threadCall = client.chat.postMessage.mock.calls[1].arguments[0];
     assert.equal(threadCall.thread_ts, undefined);
     assert.equal(threadCall.username, 'Asteria');
+    assert.equal(threadCall.icon_emoji, undefined);
     assert.equal(result.threadTs, '555.666');
   });
 
