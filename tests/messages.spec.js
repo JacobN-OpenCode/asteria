@@ -62,13 +62,17 @@ describe('Rich text helpers', () => {
     assert(output.includes('const x = 1;'));
   });
 
-  it('wraps plain text for the rich text editor and passes JSON through', () => {
+  it('wraps plain text for the rich text editor and passes rich text through', () => {
     const initial = toRichTextInitialValue('hello world');
-    assert.equal(JSON.parse(initial)[0].type, 'rich_text_section');
+    assert.equal(initial.type, 'rich_text');
+    assert.equal(initial.elements[0].type, 'rich_text_section');
+    assert.equal(initial.elements[0].elements[0].text, 'hello world');
 
     const jsonValue = '[{"type":"rich_text_section","elements":[{"type":"text","text":"hi"}]}]';
     assert.equal(isRichTextContent(jsonValue), true);
-    assert.equal(toRichTextInitialValue(jsonValue), jsonValue);
+    const passedThrough = toRichTextInitialValue(jsonValue);
+    assert.equal(passedThrough.type, 'rich_text');
+    assert.equal(passedThrough.elements.length, 1);
     assert.equal(toRichTextInitialValue(''), undefined);
   });
 });

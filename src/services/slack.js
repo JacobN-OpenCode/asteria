@@ -132,18 +132,17 @@ export async function sendDailyUpdate(client, settings, draft, questionText, { s
     ...dailyUpdateIdentity,
   });
 
-  let threadTs = response.ts;
-  const threadMessage = contentToMrkdwn(settings.daily_update_thread_message).trim();
-  if (settings.daily_update_thread_enabled && threadMessage) {
-    const threadResponse = await client.chat.postMessage({
+  let threadTs = null;
+  const followUpMessage = contentToMrkdwn(settings.daily_update_thread_message).trim();
+  if (settings.daily_update_thread_enabled && followUpMessage) {
+    const followUpResponse = await client.chat.postMessage({
       channel: settings.personal_channel_id,
-      thread_ts: response.ts,
-      text: threadMessage,
+      text: followUpMessage,
       username: 'Asteria',
       icon_emoji: ':sparkles:',
     });
 
-    threadTs = threadResponse.thread_ts || threadResponse.ts || response.ts;
+    threadTs = followUpResponse.ts || response.ts;
   }
 
   return {

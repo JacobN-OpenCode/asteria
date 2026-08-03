@@ -90,16 +90,16 @@ export function buildThreadMessageModal({ settings }) {
   return {
     type: 'modal',
     callback_id: 'edit_thread_message_submit',
-    title: { type: 'plain_text', text: 'Thread starter message' },
+    title: { type: 'plain_text', text: 'Follow-up message' },
     submit: { type: 'plain_text', text: 'Save' },
     close: { type: 'plain_text', text: 'Cancel' },
     blocks: [
       buildRichTextInput({
         blockId: 'thread_message_block',
         actionId: 'thread_message_content',
-        label: 'Thread starter message',
+        label: 'Follow-up message',
         initialValue: toRichTextInitialValue(settings.daily_update_thread_message),
-        placeholder: 'For example: :thread: here please!!',
+        placeholder: 'For example: :sparkles: anything else worth sharing?',
       }),
     ],
   };

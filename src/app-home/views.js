@@ -167,7 +167,7 @@ function buildDailyUpdateView({ settings, draft, questionPreview, notice }) {
         type: 'section',
         text: {
           type: 'mrkdwn',
-          text: `*Thread reply*\n${settings.daily_update_thread_enabled ? 'Enabled' : 'Disabled'}`,
+          text: `*Follow-up message*\n${settings.daily_update_thread_enabled ? 'Enabled' : 'Disabled'}`,
         },
       },
       {
@@ -175,7 +175,7 @@ function buildDailyUpdateView({ settings, draft, questionPreview, notice }) {
         block_id: 'daily_update_thread_toggle_block',
         label: {
           type: 'plain_text',
-          text: 'Enable thread starter message',
+          text: 'Send a follow-up message after the Daily Update',
         },
         element: {
           type: 'checkboxes',
@@ -184,7 +184,7 @@ function buildDailyUpdateView({ settings, draft, questionPreview, notice }) {
             {
               text: {
                 type: 'plain_text',
-                text: 'Send a thread reply after the Daily Update',
+                text: 'Send a follow-up message after the Daily Update',
               },
               value: 'enabled',
             },
@@ -194,7 +194,7 @@ function buildDailyUpdateView({ settings, draft, questionPreview, notice }) {
                 {
                   text: {
                     type: 'plain_text',
-                    text: 'Send a thread reply after the Daily Update',
+                    text: 'Send a follow-up message after the Daily Update',
                   },
                   value: 'enabled',
                 },
@@ -206,7 +206,7 @@ function buildDailyUpdateView({ settings, draft, questionPreview, notice }) {
         type: 'section',
         text: {
           type: 'mrkdwn',
-          text: `*Thread starter message*\n${
+          text: `*Follow-up message*\n${
             settings.daily_update_thread_message ? contentToMrkdwn(settings.daily_update_thread_message) : '_not set_'
           }`,
         },
@@ -220,7 +220,7 @@ function buildDailyUpdateView({ settings, draft, questionPreview, notice }) {
             action_id: 'open_thread_message_modal',
             text: {
               type: 'plain_text',
-              text: 'Edit thread message',
+              text: 'Edit follow-up message',
             },
           },
         ],

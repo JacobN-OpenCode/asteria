@@ -212,14 +212,16 @@ export function contentToMrkdwn(value) {
 }
 
 export function toRichTextInitialValue(value) {
+  let elements;
   if (isRichTextContent(value)) {
-    return value;
+    elements = JSON.parse(value);
+  } else {
+    const text = trimOrEmpty(value);
+    if (!text) {
+      return undefined;
+    }
+    elements = [{ type: 'rich_text_section', elements: [{ type: 'text', text }] }];
   }
 
-  const text = trimOrEmpty(value);
-  if (!text) {
-    return undefined;
-  }
-
-  return JSON.stringify([{ type: 'rich_text_section', elements: [{ type: 'text', text }] }]);
+  return { type: 'rich_text', elements };
 }

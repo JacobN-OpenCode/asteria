@@ -116,7 +116,7 @@ describe('App Home handlers', () => {
     assert.equal(mainCall.icon_url, 'https://example.com/avatar-192.png');
     assert(mainCall.text.includes('Today update'));
     const threadCall = client.chat.postMessage.mock.calls[1].arguments[0];
-    assert.equal(threadCall.thread_ts, '111.222');
+    assert.equal(threadCall.thread_ts, undefined);
     assert.equal(threadCall.username, 'Asteria');
     assert.equal(store.getDraft().main_update_text, '');
     store.close();
