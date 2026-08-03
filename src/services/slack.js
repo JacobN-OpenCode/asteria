@@ -8,6 +8,7 @@ import {
 
 const USER_GROUP_CACHE_TTL_MS = 5 * 60 * 1000;
 const OWNER_PROFILE_CACHE_TTL_MS = 5 * 60 * 1000;
+const MAX_USER_GROUP_OPTIONS = 100;
 
 let cachedUserGroups = [];
 let cachedUserGroupsAt = 0;
@@ -21,7 +22,7 @@ function ensureArray(value) {
 }
 
 export function buildUserGroupOptions(userGroups, selectedGroupId) {
-  return ensureArray(userGroups).map((group) => ({
+  const allOptions = ensureArray(userGroups).map((group) => ({
     text: {
       type: 'plain_text',
       text: `${group.handle ? `@${group.handle}` : group.name}${group.description ? ` · ${group.description}` : ''}`.slice(
@@ -32,6 +33,16 @@ export function buildUserGroupOptions(userGroups, selectedGroupId) {
     value: group.id,
     selected: group.id === selectedGroupId,
   }));
+
+  const selectedOption = allOptions.find((option) => option.value === selectedGroupId);
+  const cappedOptions = allOptions.slice(0, MAX_USER_GROUP_OPTIONS);
+  if (selectedOption && !cappedOptions.some((option) => option.value === selectedGroupId)) {
+    if (cappedOptions.length >= MAX_USER_GROUP_OPTIONS) {
+      cappedOptions.pop();
+    }
+    cappedOptions.unshift(selectedOption);
+  }
+  return cappedOptions;
 }
 
 export function normalizeUserGroups(responseBody) {

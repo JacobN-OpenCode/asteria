@@ -1,6 +1,25 @@
 import assert from 'node:assert';
 import { describe, it, mock } from 'node:test';
-import { sendDailyUpdate, sendWelcomeMessage } from '../src/services/slack.js';
+import { buildUserGroupOptions, sendDailyUpdate, sendWelcomeMessage } from '../src/services/slack.js';
+
+describe('user group options', () => {
+  it('caps options at 100 and keeps the selected group visible', () => {
+    const groups = Array.from({ length: 120 }, (_, index) => ({
+      id: `SUSG${index}`,
+      name: `Group ${index}`,
+      handle: `group${index}`,
+      description: '',
+    }));
+
+    const options = buildUserGroupOptions(groups, 'SUSG115');
+    assert.equal(options.length, 100);
+    assert.equal(options[0].value, 'SUSG115');
+
+    const withoutSelection = buildUserGroupOptions(groups, '');
+    assert.equal(withoutSelection.length, 100);
+    assert.equal(withoutSelection[0].value, 'SUSG0');
+  });
+});
 
 describe('Daily Update owner masking', () => {
   it('posts the Daily Update under the owner display name and avatar via chat:write.customize', async () => {

@@ -570,6 +570,7 @@ function buildWelcomerView({ settings, notice }) {
 
 function buildSettingsView({ settings, notice, userGroups }) {
   const currentUserGroupOptions = buildUserGroupOptions(userGroups, settings.daily_update_ping_user_group_id);
+  const userGroupsTruncated = userGroups.length > 100;
 
   return {
     type: 'home',
@@ -707,6 +708,19 @@ function buildSettingsView({ settings, notice, userGroups }) {
             : undefined,
         },
       },
+      ...(userGroupsTruncated
+        ? [
+            {
+              type: 'context',
+              elements: [
+                {
+                  type: 'mrkdwn',
+                  text: 'Slack limits the group list to 100 options; your selected group is always shown.',
+                },
+              ],
+            },
+          ]
+        : []),
       {
         type: 'section',
         text: {
