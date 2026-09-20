@@ -20,8 +20,9 @@ Asteria manages one specific Slack channel: your personal channel. You write a D
 - **Fully editable AI prompt** — write the exact prompt sent to the model, with no tags or variables.
 - Daily Question scheduling in your timezone.
 - Optional inclusion of the Daily Question inside the Daily Update.
+- Asteria generates a fresh AI question every time a Daily Update is sent, even when the automatic Daily Question is disabled.
 - Test the Daily Question: preview the output or send it to the channel.
-- Daily Update reminder DM if you have not posted by the deadline.
+- Daily Update reminder DM if you have not posted by the deadline (automatically retried until it is delivered).
 - Welcomer messages when people join the configured personal channel.
 - Optional rules Canvas link in welcome messages.
 - App Home configuration with Daily Update, Daily Question, Welcomer, and Settings tabs.
@@ -157,6 +158,7 @@ Open Asteria's App Home as the owner. The default tab is Daily Update.
 - Optionally enable a thread starter reply and edit its text.
 - Press Send Daily Update to post to the configured personal channel.
 - The update is posted under your Slack display name and avatar using Slack's `chat.postMessage`/`chat:write.customize` behaviour.
+- A fresh AI question is generated each time you send, and is embedded in the update when the "Include in Daily Update" toggle is on. This happens even when the automatic Daily Question is disabled.
 
 ### Daily Question
 
@@ -189,12 +191,12 @@ Only the Slack user ID in `PERSONAL_CHANNEL_OWNER_ID` can save these settings. E
 2. Write the Daily Update.
 3. Add an optional song and event.
 4. Press Send Daily Update.
-5. Asteria posts the message to your personal channel under your name and avatar and, if enabled, adds a thread reply.
-6. Asteria posts the Daily Question separately on its own schedule, using your AI prompt.
-7. If you have not posted by the reminder deadline, Asteria sends you a DM reminder.
+5. Asteria posts the message to your personal channel under your name and avatar and, if enabled, adds a thread reply. A fresh AI question is generated for every send and embedded when inclusion is enabled.
+6. If the automatic Daily Question is enabled, Asteria also posts it separately on its own schedule, using your AI prompt.
+7. If you have not posted by the reminder deadline, Asteria sends you a DM reminder (and retries if the send fails).
 8. If someone joins your personal channel, Asteria sends the configured welcome message.
 
-When Daily Question inclusion is enabled, the question is also included inside the Daily Update, but it is still posted separately as its own Slack message.
+When Daily Question inclusion is enabled, a freshly generated question is embedded inside the Daily Update. The Daily Question is also still posted separately on its own schedule when the automatic Daily Question is enabled.
 
 ## Slack Permissions
 
@@ -215,7 +217,7 @@ Asteria uses the OpenAI-compatible Hack Club AI endpoint at `https://ai.hackclub
 
 - The API key comes from `HACKCLUB_AI_KEY`.
 - The model comes from `HACKCLUB_AI_MODEL`.
-- The Daily Question generator is the only AI feature in Asteria. Its prompt is the one you write in the Daily Question tab.
+- The Daily Question generator runs on its own schedule and whenever a Daily Update is sent. Its prompt is the one you write in the Daily Question tab.
 - Song of the Day, Event of the Day, and welcome text are always manually configured.
 
 ## Troubleshooting

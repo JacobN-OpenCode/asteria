@@ -135,7 +135,7 @@ describe('Asteria store', () => {
     store.close();
   });
 
-  it('prevents duplicate scheduled job claims for the same day', async () => {
+  it('does not re-claim a completed scheduled job for the same day', async () => {
     const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'asteria-store-'));
     const databasePath = path.join(tempDir, 'asteria.sqlite');
     createdPaths.push(databasePath);
@@ -147,12 +147,32 @@ describe('Asteria store', () => {
       }),
       true,
     );
+    store.completeScheduledJob('daily-reminder', '2026-08-03', {
+      sent: true,
+    });
     assert.equal(
       store.claimScheduledJob('daily-reminder', '2026-08-03', {
         kind: 'reminder',
       }),
       false,
     );
+    store.close();
+  });
+
+  it('allows re-claiming a failed or in-flight scheduled job so it can retry', async () => {
+    const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'asteria-store-'));
+    const databasePath = path.join(tempDir, 'asteria.sqlite');
+    createdPaths.push(databasePath);
+
+    const store = await createStore(databasePath);
+    assert.equal(store.claimScheduledJob('daily-reminder', '2026-08-04'), true);
+    assert.equal(store.claimScheduledJob('daily-reminder', '2026-08-04'), true);
+    store.failScheduledJob('daily-reminder', '2026-08-04', 'DM failed');
+    assert.equal(store.claimScheduledJob('daily-reminder', '2026-08-04'), true);
+    store.completeScheduledJob('daily-reminder', '2026-08-04', {
+      sent: true,
+    });
+    assert.equal(store.claimScheduledJob('daily-reminder', '2026-08-04'), false);
     store.close();
   });
 });

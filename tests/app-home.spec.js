@@ -784,4 +784,121 @@ describe('App Home handlers', () => {
     assert(testButton);
     store.close();
   });
+
+  it('generates a fresh AI question for every Daily Update even when the automatic Daily Question is off', async () => {
+    const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'asteria-apphome-'));
+    const databasePath = path.join(tempDir, 'asteria.sqlite');
+    createdPaths.push(databasePath);
+
+    const store = await createStore(databasePath);
+    store.updateSettings({
+      personal_channel_owner_id: 'UOWNER',
+      personal_channel_id: 'C123',
+      daily_update_ping_user_group_id: 'S123',
+      daily_question_enabled: false,
+      daily_question_include_in_daily_update: true,
+    });
+    store.saveDraft({ main_update_text: 'Today update' });
+
+    const generateDailyQuestion = mock.fn(async () => ({
+      questionText: 'What did you ship today?',
+      questionHash: 'hash-fresh',
+    }));
+
+    const client = createClient();
+    const handlers = createHandlerTestHarness({ store, aiService: { generateDailyQuestion } });
+
+    await handlers['action:send_daily_update']({
+      ack: mock.fn(),
+      body: { user: { id: 'UOWNER' }, view: { state: { values: {} } } },
+      client,
+      logger: { error: mock.fn() },
+    });
+
+    assert.equal(generateDailyQuestion.mock.callCount(), 1);
+    const mainCall = client.chat.postMessage.mock.calls[0].arguments[0];
+    assert(mainCall.text.includes('What did you ship today?'));
+    assert(store.getRecentDailyQuestionTexts(5).some((question) => question.includes('What did you ship today?')));
+    store.close();
+  });
+
+  it('still generates the fresh AI question but does not embed it when Include in Daily Update is off', async () => {
+    const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'asteria-apphome-'));
+    const databasePath = path.join(tempDir, 'asteria.sqlite');
+    createdPaths.push(databasePath);
+
+    const store = await createStore(databasePath);
+    store.updateSettings({
+      personal_channel_owner_id: 'UOWNER',
+      personal_channel_id: 'C123',
+      daily_update_ping_user_group_id: 'S123',
+      daily_question_enabled: false,
+      daily_question_include_in_daily_update: false,
+    });
+    store.saveDraft({ main_update_text: 'Today update' });
+
+    const generateDailyQuestion = mock.fn(async () => ({
+      questionText: 'What did you ship today?',
+      questionHash: 'hash-fresh',
+    }));
+
+    const client = createClient();
+    const handlers = createHandlerTestHarness({ store, aiService: { generateDailyQuestion } });
+
+    await handlers['action:send_daily_update']({
+      ack: mock.fn(),
+      body: { user: { id: 'UOWNER' }, view: { state: { values: {} } } },
+      client,
+      logger: { error: mock.fn() },
+    });
+
+    assert.equal(generateDailyQuestion.mock.callCount(), 1);
+    const mainCall = client.chat.postMessage.mock.calls[0].arguments[0];
+    assert(!mainCall.text.includes('What did you ship today?'));
+    assert(store.getRecentDailyQuestionTexts(5).some((question) => question.includes('What did you ship today?')));
+    store.close();
+  });
+
+  it('falls back to the last recorded question when AI generation fails during a Daily Update', async () => {
+    const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'asteria-apphome-'));
+    const databasePath = path.join(tempDir, 'asteria.sqlite');
+    createdPaths.push(databasePath);
+
+    const store = await createStore(databasePath);
+    store.updateSettings({
+      personal_channel_owner_id: 'UOWNER',
+      personal_channel_id: 'C123',
+      daily_update_ping_user_group_id: 'S123',
+      daily_question_include_in_daily_update: true,
+    });
+    store.saveDraft({ main_update_text: 'Today update' });
+    store.recordDailyQuestion({
+      localDate: '2026-01-01',
+      questionText: 'Previous question?',
+      topics: [],
+      tone: '',
+      customInstructions: '',
+      questionHash: 'hash-past',
+      messageTs: '1.1',
+      sentAtUtc: '2026-01-01T10:00:00.000Z',
+    });
+
+    const generateDailyQuestion = mock.fn(async () => {
+      throw new Error('AI down');
+    });
+
+    const client = createClient();
+    const handlers = createHandlerTestHarness({ store, aiService: { generateDailyQuestion } });
+
+    await handlers['action:send_daily_update']({
+      ack: mock.fn(),
+      body: { user: { id: 'UOWNER' }, view: { state: { values: {} } } },
+      client,
+      logger: { error: mock.fn() },
+    });
+
+    const mainCall = client.chat.postMessage.mock.calls[0].arguments[0];
+    assert(mainCall.text.includes('Previous question?'));
+    store.close();
+  });
 });
