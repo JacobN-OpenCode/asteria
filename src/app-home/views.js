@@ -11,6 +11,7 @@ function buildTabs(activeTab) {
     { id: 'daily-update', label: 'Daily Update' },
     { id: 'daily-question', label: 'Daily Question' },
     { id: 'welcomer', label: 'Welcomer' },
+    { id: 'sync', label: 'Sync' },
     { id: 'settings', label: 'Settings' },
   ];
 
@@ -501,6 +502,158 @@ function buildWelcomerView({ settings, notice }) {
   };
 }
 
+function buildSyncView({ settings, notice, isOwner }) {
+  const configured = Boolean(settings.todoist_api_token && settings.slack_list_id);
+
+  return {
+    type: 'home',
+    callback_id: 'asteria_home_sync',
+    blocks: [
+      { type: 'header', text: { type: 'plain_text', text: 'Asteria' } },
+      ...buildBanner(notice),
+      buildTabs('sync'),
+      {
+        type: 'section',
+        text: {
+          type: 'mrkdwn',
+          text: 'Two-way sync between a Slack List and Todoist. Items added to the list are created as Todoist tasks; completing a Todoist task marks the list item complete and posts a message.',
+        },
+      },
+      ...(!isOwner
+        ? [
+            {
+              type: 'section',
+              text: {
+                type: 'mrkdwn',
+                text: 'Only the configured personal channel owner can change sync settings.',
+              },
+            },
+          ]
+        : [
+            {
+              type: 'context',
+              elements: [
+                {
+                  type: 'mrkdwn',
+                  text: configured ? '*Status:* Configured' : '*Status:* Not configured',
+                },
+              ],
+            },
+            {
+              type: 'input',
+              block_id: 'sync_enabled_block',
+              label: { type: 'plain_text', text: 'Enable Two-way Sync' },
+              element: {
+                type: 'checkboxes',
+                action_id: 'sync_enabled',
+                options: [
+                  {
+                    text: { type: 'plain_text', text: 'Enable sync between Slack List and Todoist' },
+                    value: 'enabled',
+                  },
+                ],
+                initial_options: settings.enabled
+                  ? [
+                      {
+                        text: { type: 'plain_text', text: 'Enable sync between Slack List and Todoist' },
+                        value: 'enabled',
+                      },
+                    ]
+                  : [],
+              },
+            },
+            {
+              type: 'input',
+              block_id: 'sync_todoist_api_token_block',
+              label: { type: 'plain_text', text: 'Todoist API token' },
+              element: {
+                type: 'plain_text_input',
+                action_id: 'sync_todoist_api_token',
+                initial_value: settings.todoist_api_token || '',
+                placeholder: { type: 'plain_text', text: 'Create one in Todoist App Management (read/write scopes)' },
+              },
+            },
+            {
+              type: 'input',
+              block_id: 'sync_slack_list_id_block',
+              label: { type: 'plain_text', text: 'Slack List ID' },
+              element: {
+                type: 'plain_text_input',
+                action_id: 'sync_slack_list_id',
+                initial_value: settings.slack_list_id || '',
+                placeholder: { type: 'plain_text', text: 'List ID from the list URL, e.g. F0C37D72NNM' },
+              },
+            },
+            {
+              type: 'input',
+              block_id: 'sync_todoist_project_name_block',
+              label: { type: 'plain_text', text: 'Todoist project name' },
+              element: {
+                type: 'plain_text_input',
+                action_id: 'sync_todoist_project_name',
+                initial_value: settings.todoist_project_name || 'Public Slack To Do List',
+                placeholder: { type: 'plain_text', text: 'Project that tasks are created in' },
+              },
+            },
+            {
+              type: 'input',
+              block_id: 'sync_notification_channel_id_block',
+              label: { type: 'plain_text', text: 'Notification channel ID' },
+              element: {
+                type: 'plain_text_input',
+                action_id: 'sync_notification_channel_id',
+                initial_value: settings.notification_channel_id || '',
+                placeholder: { type: 'plain_text', text: 'Channel that receives Task Completed messages' },
+              },
+            },
+            {
+              type: 'input',
+              block_id: 'sync_poll_interval_block',
+              label: { type: 'plain_text', text: 'Poll interval (seconds)' },
+              element: {
+                type: 'plain_text_input',
+                action_id: 'sync_poll_interval',
+                initial_value: String(settings.poll_interval_seconds || 300),
+                placeholder: { type: 'plain_text', text: 'How often Slack is checked for new items' },
+              },
+            },
+            {
+              type: 'input',
+              block_id: 'sync_webhook_secret_block',
+              label: { type: 'plain_text', text: 'Webhook secret' },
+              element: {
+                type: 'plain_text_input',
+                action_id: 'sync_webhook_secret',
+                initial_value: settings.webhook_secret || '',
+                placeholder: { type: 'plain_text', text: 'Shared secret used to verify Todoist webhooks (HMAC)' },
+              },
+            },
+            {
+              type: 'context',
+              elements: [
+                {
+                  type: 'mrkdwn',
+                  text: 'For instant updates, create a Todoist webhook pointing at `{public base URL}/webhooks/todoist` with the secret above as the HMAC key.',
+                },
+              ],
+            },
+            {
+              type: 'actions',
+              block_id: 'sync_actions',
+              elements: [
+                {
+                  type: 'button',
+                  action_id: 'save_sync_settings',
+                  text: { type: 'plain_text', text: 'Save Sync Settings' },
+                  style: 'primary',
+                },
+              ],
+            },
+          ]),
+    ],
+  };
+}
+
 function buildSettingsView({ settings, notice }) {
   return {
     type: 'home',
@@ -656,7 +809,16 @@ function buildSettingsView({ settings, notice }) {
   };
 }
 
-export function buildHomeView({ tab, settings, draft, questionPreview, recentQuestions, notice, isOwner }) {
+export function buildHomeView({
+  tab,
+  settings,
+  draft,
+  questionPreview,
+  recentQuestions,
+  notice,
+  isOwner,
+  syncSettings,
+}) {
   if (!isOwner) {
     return buildReadOnlyView(settings);
   }
@@ -671,6 +833,10 @@ export function buildHomeView({ tab, settings, draft, questionPreview, recentQue
 
   if (tab === 'welcomer') {
     return buildWelcomerView({ settings, notice });
+  }
+
+  if (tab === 'sync') {
+    return buildSyncView({ settings: syncSettings || {}, notice, isOwner });
   }
 
   if (tab === 'settings') {

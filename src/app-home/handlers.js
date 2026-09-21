@@ -54,6 +54,7 @@ async function openModal(client, triggerId, view) {
 export function createHomeHandlers({ app, store, aiService }) {
   async function publishTab(client, userId, tab, notice = '') {
     const settings = store.getSettings();
+    const syncSettings = store.getSyncSettings();
     const draft = store.getDraft();
     const recentQuestions = store.getRecentDailyQuestionTexts(5);
     const lastQuestion = store.getLastDailyQuestion();
@@ -68,6 +69,7 @@ export function createHomeHandlers({ app, store, aiService }) {
       buildHomeView({
         tab,
         settings,
+        syncSettings,
         draft,
         questionPreview,
         recentQuestions,
@@ -501,6 +503,32 @@ export function createHomeHandlers({ app, store, aiService }) {
     await publishTab(client, body.user.id, 'settings', ':white_check_mark: General settings saved.');
   }
 
+  async function handleSaveSyncSettings({ ack, body, client }) {
+    await ack();
+    const settings = store.getSettings();
+    if (body.user.id !== settings.personal_channel_owner_id) {
+      await publishTab(client, body.user.id, 'sync', ':warning: Only the configured owner can change sync settings.');
+      return;
+    }
+
+    const viewState = body.view.state.values;
+    store.updateSyncSettings({
+      enabled: getCheckboxEnabled(viewState, 'sync_enabled_block', 'sync_enabled'),
+      todoist_api_token: getInputValue(viewState, 'sync_todoist_api_token_block', 'sync_todoist_api_token'),
+      slack_list_id: getInputValue(viewState, 'sync_slack_list_id_block', 'sync_slack_list_id'),
+      todoist_project_name: getInputValue(viewState, 'sync_todoist_project_name_block', 'sync_todoist_project_name'),
+      notification_channel_id: getInputValue(
+        viewState,
+        'sync_notification_channel_id_block',
+        'sync_notification_channel_id',
+      ),
+      poll_interval_seconds: getInputValue(viewState, 'sync_poll_interval_block', 'sync_poll_interval'),
+      webhook_secret: getInputValue(viewState, 'sync_webhook_secret_block', 'sync_webhook_secret'),
+    });
+
+    await publishTab(client, body.user.id, 'sync', ':white_check_mark: Sync settings saved.');
+  }
+
   async function handleAppHomeOpened({ event, client }) {
     if (event.tab !== 'home') {
       return;
@@ -550,6 +578,7 @@ export function createHomeHandlers({ app, store, aiService }) {
   app.action('navigate_daily_update', (payload) => handleNavigation('daily-update', payload));
   app.action('navigate_daily_question', (payload) => handleNavigation('daily-question', payload));
   app.action('navigate_welcomer', (payload) => handleNavigation('welcomer', payload));
+  app.action('navigate_sync', (payload) => handleNavigation('sync', payload));
   app.action('navigate_settings', (payload) => handleNavigation('settings', payload));
   app.action('open_daily_update_modal', handleOpenDailyUpdateModal);
   app.action('open_thread_message_modal', handleOpenThreadMessageModal);
@@ -563,6 +592,7 @@ export function createHomeHandlers({ app, store, aiService }) {
   app.view('test_daily_question_submit', handleQuestionTestSubmit);
   app.action('save_welcomer_settings', handleSaveWelcomerSettings);
   app.action('save_general_settings', handleSaveGeneralSettings);
+  app.action('save_sync_settings', handleSaveSyncSettings);
   app.view('compose_daily_update_submit', handleComposeDailyUpdateSubmit);
   app.view('edit_thread_message_submit', handleEditThreadMessageSubmit);
   app.view('edit_welcome_message_submit', handleEditWelcomeMessageSubmit);

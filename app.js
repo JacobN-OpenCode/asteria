@@ -1,10 +1,12 @@
 import { createAsteriaRuntime } from './src/asteria.js';
 
 async function main() {
-  const { app, scheduler, store } = await createAsteriaRuntime();
+  const { app, scheduler, store, syncPoller, webhookServer } = await createAsteriaRuntime();
 
   const shutdown = async () => {
     scheduler.stop();
+    syncPoller.stop();
+    webhookServer.stop();
     store.close();
     await app.stop().catch(() => {});
   };
@@ -19,6 +21,7 @@ async function main() {
 
   await app.start();
   scheduler.start();
+  syncPoller.start();
   app.logger.info('Asteria is running in Socket Mode.');
 }
 

@@ -25,6 +25,8 @@
         "chat:write.customize",
         "groups:read",
         "im:write",
+        "lists:read",
+        "lists:write",
         "usergroups:read",
         "users.profile:read"
       ]
