@@ -26,6 +26,17 @@ const DEFAULT_SETTINGS = {
   updated_at: new Date().toISOString(),
 };
 
+const DEFAULT_SYNC_SETTINGS = {
+  enabled: 0,
+  todoist_api_token: '',
+  slack_list_id: '',
+  todoist_project_name: 'Public Slack To Do List',
+  notification_channel_id: '',
+  poll_interval_seconds: 300,
+  webhook_secret: '',
+  updated_at: new Date().toISOString(),
+};
+
 function ensureDirectoryForFile(filePath) {
   fs.mkdirSync(path.dirname(filePath), { recursive: true });
 }
@@ -76,6 +87,42 @@ function sanitizeSettingsPatch(patch) {
 
   if (sanitizedPatch.daily_question_reply_text) {
     sanitizedPatch.daily_question_reply_text = sanitizedPatch.daily_question_reply_text.trim();
+  }
+
+  return sanitizedPatch;
+}
+
+function sanitizeSyncSettingsPatch(patch) {
+  const sanitizedPatch = { ...patch };
+
+  for (const textKey of [
+    'todoist_api_token',
+    'slack_list_id',
+    'todoist_project_name',
+    'notification_channel_id',
+    'webhook_secret',
+  ]) {
+    if (textKey in sanitizedPatch) {
+      sanitizedPatch[textKey] = String(sanitizedPatch[textKey] ?? '').trim();
+    }
+  }
+
+  if ('todoist_project_name' in sanitizedPatch) {
+    sanitizedPatch.todoist_project_name =
+      sanitizedPatch.todoist_project_name || DEFAULT_SYNC_SETTINGS.todoist_project_name;
+  }
+
+  if ('enabled' in sanitizedPatch) {
+    sanitizedPatch.enabled = toBooleanInteger(sanitizedPatch.enabled);
+  }
+
+  if ('poll_interval_seconds' in sanitizedPatch) {
+    const parsedInterval = Number.parseInt(sanitizedPatch.poll_interval_seconds, 10);
+    if (Number.isFinite(parsedInterval) && parsedInterval >= 15) {
+      sanitizedPatch.poll_interval_seconds = parsedInterval;
+    } else {
+      sanitizedPatch.poll_interval_seconds = DEFAULT_SYNC_SETTINGS.poll_interval_seconds;
+    }
   }
 
   return sanitizedPatch;
@@ -217,6 +264,31 @@ export async function createStore(databasePath, options = {}) {
       message_ts TEXT NOT NULL,
       UNIQUE(event_ts, channel_id, user_id)
     );
+
+    CREATE TABLE IF NOT EXISTS sync_settings (
+      id INTEGER PRIMARY KEY CHECK (id = 1),
+      enabled INTEGER NOT NULL DEFAULT 0,
+      todoist_api_token TEXT NOT NULL DEFAULT '',
+      slack_list_id TEXT NOT NULL DEFAULT '',
+      todoist_project_name TEXT NOT NULL DEFAULT 'Public Slack To Do List',
+      notification_channel_id TEXT NOT NULL DEFAULT '',
+      poll_interval_seconds INTEGER NOT NULL DEFAULT 300,
+      webhook_secret TEXT NOT NULL DEFAULT '',
+      updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+    );
+
+    CREATE TABLE IF NOT EXISTS sync_items (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      slack_item_id TEXT NOT NULL,
+      todoist_task_id TEXT NOT NULL,
+      last_synced_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      added_by TEXT NOT NULL DEFAULT '',
+      is_completed INTEGER NOT NULL DEFAULT 0,
+      name_hash TEXT NOT NULL DEFAULT '',
+      UNIQUE(slack_item_id),
+      UNIQUE(todoist_task_id)
+    );
   `);
 
   const existingSettingColumns = bindAndFetchAll(database, 'PRAGMA table_info(app_settings)').map(
@@ -289,6 +361,35 @@ export async function createStore(databasePath, options = {}) {
     VALUES (1, '', '', '', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
   `,
   );
+
+  bindAndRun(
+    database,
+    `
+    INSERT OR IGNORE INTO sync_settings (
+      id,
+      enabled,
+      todoist_api_token,
+      slack_list_id,
+      todoist_project_name,
+      notification_channel_id,
+      poll_interval_seconds,
+      webhook_secret,
+      updated_at
+    ) VALUES (
+      1,
+      $enabled,
+      $todoist_api_token,
+      $slack_list_id,
+      $todoist_project_name,
+      $notification_channel_id,
+      $poll_interval_seconds,
+      $webhook_secret,
+      $updated_at
+    )
+  `,
+    DEFAULT_SYNC_SETTINGS,
+  );
+  const syncSettingsSeedAppliedThisBoot = getRowsChanged(database) > 0;
 
   const persist = () => {
     fs.writeFileSync(databasePath, Buffer.from(database.export()));
@@ -449,6 +550,28 @@ export async function createStore(databasePath, options = {}) {
     const changes = getRowsChanged(database);
     persist();
     return changes > 0;
+  };
+
+  const getSyncSettingsRow = () => bindAndFetchOne(database, 'SELECT * FROM sync_settings WHERE id = 1');
+
+  const updateSyncSettingsRow = (params) => {
+    bindAndRun(
+      database,
+      `
+      UPDATE sync_settings SET
+        enabled = $enabled,
+        todoist_api_token = $todoist_api_token,
+        slack_list_id = $slack_list_id,
+        todoist_project_name = $todoist_project_name,
+        notification_channel_id = $notification_channel_id,
+        poll_interval_seconds = $poll_interval_seconds,
+        webhook_secret = $webhook_secret,
+        updated_at = $updated_at
+      WHERE id = 1
+    `,
+      params,
+    );
+    persist();
   };
 
   const store = {
@@ -623,6 +746,105 @@ export async function createStore(databasePath, options = {}) {
       return row.count > 0;
     },
 
+    getSyncSettings() {
+      const syncSettingsRow = getSyncSettingsRow();
+      return {
+        ...syncSettingsRow,
+        enabled: parseBoolean(syncSettingsRow.enabled),
+      };
+    },
+
+    updateSyncSettings(patch) {
+      const currentSyncSettings = this.getSyncSettings();
+      const mergedSyncSettings = sanitizeSyncSettingsPatch({
+        ...currentSyncSettings,
+        ...patch,
+        updated_at: new Date().toISOString(),
+      });
+      updateSyncSettingsRow(mergedSyncSettings);
+      return this.getSyncSettings();
+    },
+
+    listSyncItems() {
+      return bindAndFetchAll(database, 'SELECT * FROM sync_items ORDER BY id ASC');
+    },
+
+    getSyncItemBySlackItemId(slackItemId) {
+      return bindAndFetchOne(database, 'SELECT * FROM sync_items WHERE slack_item_id = $slack_item_id', {
+        $slack_item_id: slackItemId,
+      });
+    },
+
+    getSyncItemByTodoistTaskId(todoistTaskId) {
+      return bindAndFetchOne(database, 'SELECT * FROM sync_items WHERE todoist_task_id = $todoist_task_id', {
+        $todoist_task_id: todoistTaskId,
+      });
+    },
+
+    upsertSyncItem({ slackItemId, todoistTaskId, addedBy = '', isCompleted = false, nameHash = '' }) {
+      const nowIso = new Date().toISOString();
+      bindAndRun(
+        database,
+        `
+        INSERT INTO sync_items (
+          slack_item_id,
+          todoist_task_id,
+          last_synced_at,
+          created_at,
+          added_by,
+          is_completed,
+          name_hash
+        ) VALUES (
+          $slack_item_id,
+          $todoist_task_id,
+          $last_synced_at,
+          $created_at,
+          $added_by,
+          $is_completed,
+          $name_hash
+        )
+        ON CONFLICT(slack_item_id) DO UPDATE SET
+          todoist_task_id = excluded.todoist_task_id,
+          last_synced_at = excluded.last_synced_at,
+          added_by = excluded.added_by,
+          is_completed = excluded.is_completed,
+          name_hash = excluded.name_hash
+      `,
+        {
+          $slack_item_id: slackItemId,
+          $todoist_task_id: todoistTaskId,
+          $last_synced_at: nowIso,
+          $created_at: nowIso,
+          $added_by: addedBy,
+          $is_completed: toBooleanInteger(isCompleted),
+          $name_hash: nameHash,
+        },
+      );
+      persist();
+      return this.getSyncItemBySlackItemId(slackItemId);
+    },
+
+    updateSyncItemCompletion(todoistTaskId, isCompleted, nameHash = '') {
+      bindAndRun(
+        database,
+        `
+        UPDATE sync_items SET
+          is_completed = $is_completed,
+          name_hash = $name_hash,
+          last_synced_at = $last_synced_at
+        WHERE todoist_task_id = $todoist_task_id
+      `,
+        {
+          $todoist_task_id: todoistTaskId,
+          $is_completed: toBooleanInteger(isCompleted),
+          $name_hash: nameHash,
+          $last_synced_at: new Date().toISOString(),
+        },
+      );
+      persist();
+      return this.getSyncItemByTodoistTaskId(todoistTaskId);
+    },
+
     close() {
       persist();
       database.close();
@@ -640,6 +862,37 @@ export async function createStore(databasePath, options = {}) {
   }
   if (Object.keys(seedPatch).length > 0) {
     store.updateSettings(seedPatch);
+  }
+
+  const currentSyncSettings = store.getSyncSettings();
+  const seedSyncPatch = {};
+  if (!currentSyncSettings.todoist_api_token && options.todoistApiToken) {
+    seedSyncPatch.todoist_api_token = options.todoistApiToken;
+  }
+  if (!currentSyncSettings.slack_list_id && options.slackListId) {
+    seedSyncPatch.slack_list_id = options.slackListId;
+  }
+  if (!currentSyncSettings.notification_channel_id && options.notificationChannelId) {
+    seedSyncPatch.notification_channel_id = options.notificationChannelId;
+  }
+  if (!currentSyncSettings.todoist_project_name && options.todoistProjectName) {
+    seedSyncPatch.todoist_project_name = options.todoistProjectName;
+  }
+  if (!currentSyncSettings.webhook_secret && options.todoistWebhookSecret) {
+    seedSyncPatch.webhook_secret = options.todoistWebhookSecret;
+  }
+  if (syncSettingsSeedAppliedThisBoot && options.syncEnabled !== undefined && options.syncEnabled !== null) {
+    seedSyncPatch.enabled = options.syncEnabled;
+  }
+  if (
+    syncSettingsSeedAppliedThisBoot &&
+    options.syncPollIntervalSeconds !== undefined &&
+    options.syncPollIntervalSeconds !== null
+  ) {
+    seedSyncPatch.poll_interval_seconds = options.syncPollIntervalSeconds;
+  }
+  if (Object.keys(seedSyncPatch).length > 0) {
+    store.updateSyncSettings(seedSyncPatch);
   }
 
   return store;

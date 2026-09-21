@@ -24,8 +24,9 @@ Asteria manages one specific Slack channel: your personal channel. You write a D
 - Daily Update reminder DM if you have not posted by the deadline.
 - Welcomer messages when people join the configured personal channel.
 - Optional rules Canvas link in welcome messages.
-- App Home configuration with Daily Update, Daily Question, Welcomer, and Settings tabs.
+- App Home configuration with Daily Update, Daily Question, Welcomer, Sync, and Settings tabs.
 - Owner-only configuration access with restricted views for everyone else.
+- Two-way Todoist ⇄ Slack List sync: list additions become Todoist tasks, completing a Todoist task marks the list item done and posts a message.
 - SQLite persistence for settings, drafts, send history, question history, reminder state, and welcome deduplication.
 - Socket Mode operation with no public webhook server.
 - Optional status RSS feed for your bot (great for a Nest uptime monitor).
@@ -95,6 +96,41 @@ If you change scopes in the manifest later, reinstall the app in Slack so the ne
 | `ASTERIA_STATUS_PORT`           | No       | Port for the optional status RSS server.                  | `8787`                             |
 | `ASTERIA_STATUS_FILE`           | No       | Where the status server reads/writes events.              | `./data/status-events.json`        |
 | `ASTERIA_STATUS_URL`            | No       | Public base URL used in the status RSS feed.              | `http://localhost`                 |
+
+### Todoist ⇄ Slack List sync
+
+Asteria can two-way sync a Slack List with a Todoist project. Everything below is also
+configurable at runtime from the **Sync** tab in App Home, but these env vars provide the
+initial defaults on first boot.
+
+| Variable                          | Required | Purpose                                                                  | Default                         |
+| --------------------------------- | -------- | ------------------------------------------------------------------------ | ------------------------------- |
+| `TODOIST_API_TOKEN`               | No       | Todoist REST API token (App Management, read/write scopes).              | None                            |
+| `TODOIST_SYNC_ENABLED`            | No       | Set `true` to enable the sync poller at startup.                         | `false`                         |
+| `SLACK_SYNC_LIST_ID`              | No       | ID of the Slack List to sync (from the list URL, e.g. `F0C37D72NNM`).    | None                            |
+| `TODOIST_PROJECT_NAME`            | No       | Todoist project where synced tasks are created.                          | `Public Slack To Do List`       |
+| `SLACK_NOTIFICATION_CHANNEL_ID`   | No       | Channel that receives "Task Completed" messages from Todoist.            | None                            |
+| `TODOIST_SYNC_POLL_INTERVAL_SECONDS` | No    | How often Asteria polls the Slack List for additions/changes.            | `300`                           |
+| `TODOIST_API_BASE_URL`            | No       | Todoist API root to use.                                                 | `https://api.todoist.com/rest/v2` |
+| `ASTERIA_WEBHOOK_PORT`            | No       | Local port for the webhook server (`/webhooks/todoist`).                 | `8792`                          |
+| `TODOIST_WEBHOOK_SECRET`          | No       | HMAC secret used to verify Todoist webhook signatures.                   | None                            |
+
+How it works:
+
+- New items added to the Slack List are created as Todoist tasks (title, due date, and a
+  description noting who added them and when), under `TODOIST_PROJECT_NAME`.
+- Unchecking/checking the list item's checkbox completes or reopens the matching Todoist task.
+- When a Todoist task is marked complete, the Slack List checkbox is checked and a
+  `Task Completed: <task> (originally added by <user>)` message is posted to
+  `SLACK_NOTIFICATION_CHANNEL_ID`.
+- Sync runs on the poll interval above; for instant completion messages, create a Todoist
+  webhook that POSTs to `https://<your-public-url>/webhooks/todoist` and set the webhook's
+  HMAC secret (under the webhook settings, "Secret" field) to `TODOIST_WEBHOOK_SECRET`.
+  Asteria verifies the `X-Todoist-Hmac-SHA256` header on every request.
+
+These webhook JSON payloads are signed with HMAC-SHA256 using your secret; requests without
+a configured secret (or with an invalid signature) are rejected. The webhook server also
+serves a `/health` endpoint.
 
 ## Running Locally
 
