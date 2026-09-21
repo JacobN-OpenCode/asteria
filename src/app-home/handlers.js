@@ -292,10 +292,37 @@ export function createHomeHandlers({ app, store, aiService }) {
     try {
       const todayKey = getLocalDateKey(new Date(), settings.timezone);
       const lastQuestion = store.getLastDailyQuestion();
-      const questionText =
-        settings.daily_question_include_in_daily_update && lastQuestion?.question_text
-          ? lastQuestion.question_text
-          : '';
+      let questionText = '';
+
+      if (aiService) {
+        try {
+          const aiResult = await aiService.generateDailyQuestion({
+            prompt: settings.daily_question_prompt,
+            recentQuestions: store.getRecentDailyQuestionTexts(5),
+          });
+
+          if (aiResult?.questionText) {
+            questionText = aiResult.questionText;
+            store.recordDailyQuestion({
+              localDate: todayKey,
+              questionText,
+              topics: [],
+              tone: '',
+              customInstructions: '',
+              questionHash: aiResult.questionHash,
+              messageTs: null,
+              sentAtUtc: null,
+            });
+          }
+        } catch (generationError) {
+          logger.error('Failed to generate a fresh Daily Question for the Daily Update', generationError);
+        }
+      }
+
+      if (!questionText && settings.daily_question_include_in_daily_update && lastQuestion?.question_text) {
+        questionText = lastQuestion.question_text;
+      }
+
       const sendResult = await sendDailyUpdate(client, settings, draft, questionText, { sentByUserId: body.user.id });
 
       store.recordDailyUpdateSend({

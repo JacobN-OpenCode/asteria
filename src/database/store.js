@@ -509,6 +509,34 @@ export async function createStore(databasePath, options = {}) {
   };
 
   const claimJobRow = (params) => {
+    const existingRow = bindAndFetchOne(
+      database,
+      'SELECT status, completed_at_utc FROM scheduled_job_runs WHERE job_name = $job_name AND local_date = $local_date',
+      params,
+    );
+
+    if (existingRow) {
+      if (existingRow.status === 'completed') {
+        return false;
+      }
+
+      bindAndRun(
+        database,
+        `
+        UPDATE scheduled_job_runs SET
+          status = $status,
+          claimed_at_utc = $claimed_at_utc,
+          completed_at_utc = NULL,
+          error_text = NULL,
+          payload_json = $payload_json
+        WHERE job_name = $job_name AND local_date = $local_date
+      `,
+        params,
+      );
+      persist();
+      return true;
+    }
+
     bindAndRun(
       database,
       `

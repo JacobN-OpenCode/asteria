@@ -211,4 +211,118 @@ describe('scheduler', () => {
     assert(!postMessages[0].text.includes('<!subteam^S123>'));
     assert.equal(store.recordDailyQuestion.mock.callCount(), 1);
   });
+
+  it('skips the reminder DM when a Daily Update was already sent today', async () => {
+    const now = DateTime.utc();
+    const currentClock = now.setZone('UTC').toFormat('HH:mm');
+    const completedJobs = [];
+
+    const store = {
+      getSettings: () => ({
+        timezone: 'UTC',
+        daily_question_enabled: false,
+        daily_question_send_time: '00:00',
+        daily_update_reminder_enabled: true,
+        daily_update_reminder_time: currentClock,
+        personal_channel_owner_id: 'UOWNER',
+        personal_channel_id: 'C123',
+      }),
+      claimScheduledJob: () => true,
+      hasDailyUpdateOnDate: () => true,
+      getRecentDailyQuestionTexts: () => [],
+      recordDailyQuestion: mock.fn(),
+      completeScheduledJob: (_jobName, _localDate, payload) => {
+        completedJobs.push(payload);
+      },
+      failScheduledJob: mock.fn(),
+    };
+
+    const client = {
+      chat: {
+        postMessage: mock.fn(async () => ({ ts: '111.222' })),
+      },
+    };
+
+    const scheduler = createScheduler({
+      store,
+      aiService: { generateDailyQuestion: mock.fn() },
+      client,
+      logger: { error: mock.fn() },
+      environment: { pollIntervalSeconds: 1 },
+    });
+
+    await scheduler.tick();
+
+    assert.equal(client.chat.postMessage.mock.callCount(), 0);
+    assert.equal(completedJobs.length, 1);
+    assert.equal(completedJobs[0].skipped, true);
+    assert.equal(completedJobs[0].reason, 'daily-update-already-sent');
+  });
+
+  it('retries a failed reminder on a later tick until it is delivered', async () => {
+    const now = DateTime.utc();
+    const currentClock = now.setZone('UTC').toFormat('HH:mm');
+    const jobStatuses = new Map();
+    let postMessageAttempts = 0;
+
+    const store = {
+      getSettings: () => ({
+        timezone: 'UTC',
+        daily_question_enabled: false,
+        daily_question_send_time: '00:00',
+        daily_update_reminder_enabled: true,
+        daily_update_reminder_time: currentClock,
+        personal_channel_owner_id: 'UOWNER',
+        personal_channel_id: 'C123',
+      }),
+      claimScheduledJob: (jobName, localDate) => {
+        const key = `${jobName}:${localDate}`;
+        if (jobStatuses.get(key) === 'completed') {
+          return false;
+        }
+        jobStatuses.set(key, 'claimed');
+        return true;
+      },
+      hasDailyUpdateOnDate: () => false,
+      getRecentDailyQuestionTexts: () => [],
+      recordDailyQuestion: mock.fn(),
+      completeScheduledJob: (jobName, localDate) => {
+        jobStatuses.set(`${jobName}:${localDate}`, 'completed');
+      },
+      failScheduledJob: (jobName, localDate) => {
+        jobStatuses.set(`${jobName}:${localDate}`, 'failed');
+      },
+    };
+
+    const client = {
+      conversations: {
+        open: mock.fn(async () => ({ channel: { id: 'D123' } })),
+      },
+      chat: {
+        postMessage: mock.fn(async () => {
+          postMessageAttempts += 1;
+          if (postMessageAttempts === 1) {
+            throw new Error('transient DM failure');
+          }
+          return { ts: '111.222' };
+        }),
+      },
+    };
+
+    const scheduler = createScheduler({
+      store,
+      aiService: { generateDailyQuestion: mock.fn() },
+      client,
+      logger: { error: mock.fn() },
+      environment: { pollIntervalSeconds: 1 },
+    });
+
+    await scheduler.tick();
+    assert.equal(postMessageAttempts, 1);
+
+    await scheduler.tick();
+    assert.equal(postMessageAttempts, 2);
+    const reminderJobName = `daily-reminder:${now.toISODate()}`;
+    assert.equal(jobStatuses.get(`${reminderJobName}:${now.toISODate()}`), 'completed');
+  });
 });
