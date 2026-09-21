@@ -65,6 +65,10 @@ export function createTodoistSync({ store, client, logger, environment, todoistC
       const addedBy = syncListClient.extractAddedBy(item);
       const fingerprint = `${name}|${isCompleted}|${dueDate ?? ''}`;
 
+      if (!name) {
+        continue;
+      }
+
       const existingSyncItem = store.getSyncItemBySlackItemId(slackItemId);
 
       if (!existingSyncItem) {

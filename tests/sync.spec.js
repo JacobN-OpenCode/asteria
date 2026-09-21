@@ -158,6 +158,39 @@ describe('Asteria sync store', () => {
 });
 
 describe('Slack list client', () => {
+  it('parses list_metadata.schema with todo_completed and todo_due_date column types', async () => {
+    const realShape = {
+      list: {
+        list_metadata: {
+          schema: [
+            { id: 'Col01', name: 'Name', key: 'name', type: 'text', is_primary_column: true },
+            { id: 'Col02', name: 'Completed', type: 'todo_completed', is_primary_column: false },
+            { id: 'Col03', name: 'Due Date', type: 'todo_due_date', is_primary_column: false },
+          ],
+        },
+      },
+      items: [
+        {
+          id: 'RecA',
+          fields: [
+            { column_id: 'Col01', key: 'name', value: '["x"]', text: 'Ship the thing', rich_text: [] },
+            { column_id: 'Col02', checkbox: [true], value: true },
+            { column_id: 'Col03', date: ['2026-10-01'], value: '2026-10-01' },
+          ],
+        },
+      ],
+    };
+    const client = createSlackListClient({
+      client: { slackLists: { items: { list: async () => realShape } } },
+    });
+
+    const { items, columnMap } = await client.listItems('F0C37D72NNM');
+    assert.equal(items.length, 1);
+    assert.equal(client.extractItemName(items[0], columnMap), 'Ship the thing');
+    assert.equal(client.extractCompletion(items[0], columnMap), true);
+    assert.equal(client.extractDueDate(items[0], columnMap), '2026-10-01');
+  });
+
   it('extracts name, completion, due date, and added-by from list items', () => {
     const client = createSlackListClient({ client: {}, logger: undefined });
     const columnMap = makeColumnMap();
@@ -296,6 +329,19 @@ describe('Todoist sync service', () => {
     });
     assert.equal(recorder.addTaskCalls.length, createdCount, 'unchanged items should not be re-created');
 
+    store.close();
+  });
+
+  it('skips Slack list items without a name', async () => {
+    const store = await makeStore();
+    const blank = { id: 'RecBlank', fields: [{ column_id: 'col-done', type: 'checkbox', checkbox: [false] }] };
+    const item = makeListItem({ id: 'Rec1', name: 'Real task', completed: false, createdBy: 'UOWNER' });
+    const { sync, recorder } = makeSync({ todoistLog: [blank, item], slackLog: [], store });
+
+    await sync.syncOnce({ ...store.getSyncSettings(), todoist_api_token: 'token', slack_list_id: 'LIST' });
+
+    assert.equal(recorder.addTaskCalls.length, 1);
+    assert.equal(recorder.addTaskCalls[0].content, 'Real task');
     store.close();
   });
 
