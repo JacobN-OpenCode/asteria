@@ -38,7 +38,10 @@
 
 /**
  * @typedef {object} SlackListListResponse
- * @property {{ schema?: Array<SlackListColumn> }} [list]
+ * @property {object} [list]
+ * @property {object} [list.list_metadata]
+ * @property {Array<SlackListColumn>} [list.list_metadata.schema]
+ * @property {Array<SlackListColumn>} [list.schema]
  * @property {Array<SlackListItem>} [items]
  */
 
