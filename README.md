@@ -112,7 +112,7 @@ initial defaults on first boot.
 | `TODOIST_PROJECT_NAME`            | No       | Todoist project where synced tasks are created.                          | `Public Slack To Do List`       |
 | `SLACK_NOTIFICATION_CHANNEL_ID`   | No       | Channel that receives "Task Completed" messages from Todoist.            | None                            |
 | `TODOIST_SYNC_POLL_INTERVAL_SECONDS` | No    | How often Asteria polls the Slack List for additions/changes.            | `300`                           |
-| `TODOIST_API_BASE_URL`            | No       | Todoist API root to use.                                                 | `https://api.todoist.com/rest/v2` |
+| `TODOIST_API_BASE_URL`            | No       | Todoist API root to use.                                                 | `https://api.todoist.com/api/v1` |
 | `ASTERIA_WEBHOOK_PORT`            | No       | Local port for the webhook server (`/webhooks/todoist`).                 | `8792`                          |
 | `TODOIST_WEBHOOK_SECRET`          | No       | HMAC secret used to verify Todoist webhook signatures.                   | None                            |
 
