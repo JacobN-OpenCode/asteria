@@ -261,7 +261,7 @@ describe('Todoist sync service', () => {
       store,
       client,
       logger: { warn() {}, error() {}, info() {} },
-      environment: { todoistApiBaseUrl: 'https://api.todoist.com/rest/v2', maxRetries: 1 },
+      environment: { todoistApiBaseUrl: 'https://api.todoist.com/api/v1', maxRetries: 1 },
       todoistClientFactory: () => todoistClient,
     });
 
