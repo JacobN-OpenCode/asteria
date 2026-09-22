@@ -89,13 +89,38 @@ export async function sendDirectMessage(client, userId, text) {
   return client.chat.postMessage({ channel: channelId, text });
 }
 
-export function buildDailyUpdateText(settings, draft, questionText) {
+export async function addUserToUserGroup(client, userGroupId, userId) {
+  const currentUsers = await fetchUserGroupUsers(client, userGroupId);
+  if (currentUsers.includes(userId)) {
+    return { users: currentUsers };
+  }
+  return client.usergroups.users.update({ usergroup: userGroupId, users: [...currentUsers, userId].join(',') });
+}
+
+export async function removeUserFromUserGroup(client, userGroupId, userId) {
+  const currentUsers = await fetchUserGroupUsers(client, userGroupId);
+  if (!currentUsers.includes(userId)) {
+    return { users: currentUsers };
+  }
+  return client.usergroups.users.update({
+    usergroup: userGroupId,
+    users: currentUsers.filter((member) => member !== userId).join(','),
+  });
+}
+
+export async function fetchUserGroupUsers(client, userGroupId) {
+  const response = await client.usergroups.users.list({ usergroup: userGroupId });
+  return response.users || [];
+}
+
+export function buildDailyUpdateText(settings, draft, questionText, stepsText = '') {
   return formatDailyUpdateMessage({
     userGroupId: settings.daily_update_ping_user_group_id,
     mainUpdateText: draft.main_update_text,
     songText: draft.song_text,
     eventText: draft.event_text,
     questionText,
+    stepsText,
     includeQuestion: settings.daily_question_include_in_daily_update,
   });
 }
@@ -119,8 +144,8 @@ function buildDailyUpdateIdentity(ownerIdentity, botName) {
   };
 }
 
-export async function sendDailyUpdate(client, settings, draft, questionText, { sentByUserId }) {
-  const text = buildDailyUpdateText(settings, draft, questionText);
+export async function sendDailyUpdate(client, settings, draft, questionText, { sentByUserId, stepsText = '' }) {
+  const text = buildDailyUpdateText(settings, draft, questionText, stepsText);
   const botName = settings.bot_display_name || 'Asteria';
   const ownerIdentity = await fetchOwnerIdentity(client, settings.personal_channel_owner_id);
   const dailyUpdateIdentity = buildDailyUpdateIdentity(ownerIdentity, botName);

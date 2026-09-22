@@ -23,6 +23,9 @@ const DEFAULT_SETTINGS = {
   daily_update_thread_message: ':thread: here please!!',
   daily_update_reminder_enabled: 1,
   daily_update_reminder_time: '17:00',
+  home_assistant_url: '',
+  home_assistant_token: '',
+  home_assistant_steps_entity: '',
   updated_at: new Date().toISOString(),
 };
 
@@ -205,6 +208,9 @@ export async function createStore(databasePath, options = {}) {
       daily_update_thread_message TEXT NOT NULL DEFAULT ':thread: here please!!',
       daily_update_reminder_enabled INTEGER NOT NULL DEFAULT 1,
       daily_update_reminder_time TEXT NOT NULL DEFAULT '17:00',
+      home_assistant_url TEXT NOT NULL DEFAULT '',
+      home_assistant_token TEXT NOT NULL DEFAULT '',
+      home_assistant_steps_entity TEXT NOT NULL DEFAULT '',
       updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
     );
 
@@ -265,6 +271,14 @@ export async function createStore(databasePath, options = {}) {
       UNIQUE(event_ts, channel_id, user_id)
     );
 
+    CREATE TABLE IF NOT EXISTS group_opt_outs (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      user_id TEXT NOT NULL,
+      user_group_id TEXT NOT NULL,
+      opted_out_at_utc TEXT NOT NULL,
+      UNIQUE(user_id, user_group_id)
+    );
+
     CREATE TABLE IF NOT EXISTS sync_settings (
       id INTEGER PRIMARY KEY CHECK (id = 1),
       enabled INTEGER NOT NULL DEFAULT 0,
@@ -305,6 +319,15 @@ export async function createStore(databasePath, options = {}) {
       { prompt: DEFAULT_QUESTION_PROMPT },
     );
   }
+  if (!existingSettingColumns.includes('home_assistant_url')) {
+    bindAndRun(database, "ALTER TABLE app_settings ADD COLUMN home_assistant_url TEXT NOT NULL DEFAULT ''");
+  }
+  if (!existingSettingColumns.includes('home_assistant_token')) {
+    bindAndRun(database, "ALTER TABLE app_settings ADD COLUMN home_assistant_token TEXT NOT NULL DEFAULT ''");
+  }
+  if (!existingSettingColumns.includes('home_assistant_steps_entity')) {
+    bindAndRun(database, "ALTER TABLE app_settings ADD COLUMN home_assistant_steps_entity TEXT NOT NULL DEFAULT ''");
+  }
 
   bindAndRun(
     database,
@@ -328,6 +351,9 @@ export async function createStore(databasePath, options = {}) {
       daily_update_thread_message,
       daily_update_reminder_enabled,
       daily_update_reminder_time,
+      home_assistant_url,
+      home_assistant_token,
+      home_assistant_steps_entity,
       updated_at
     ) VALUES (
       1,
@@ -348,6 +374,9 @@ export async function createStore(databasePath, options = {}) {
       $daily_update_thread_message,
       $daily_update_reminder_enabled,
       $daily_update_reminder_time,
+      $home_assistant_url,
+      $home_assistant_token,
+      $home_assistant_steps_entity,
       $updated_at
     )
   `,
@@ -418,6 +447,9 @@ export async function createStore(databasePath, options = {}) {
         daily_update_thread_message = $daily_update_thread_message,
         daily_update_reminder_enabled = $daily_update_reminder_enabled,
         daily_update_reminder_time = $daily_update_reminder_time,
+        home_assistant_url = $home_assistant_url,
+        home_assistant_token = $home_assistant_token,
+        home_assistant_steps_entity = $home_assistant_steps_entity,
         updated_at = $updated_at
       WHERE id = 1
     `,
@@ -772,6 +804,35 @@ export async function createStore(databasePath, options = {}) {
       );
 
       return row.count > 0;
+    },
+
+    hasGroupOptOut({ userId, userGroupId }) {
+      const row = bindAndFetchOne(
+        database,
+        'SELECT COUNT(1) AS count FROM group_opt_outs WHERE user_id = $user_id AND user_group_id = $user_group_id',
+        {
+          $user_id: userId,
+          $user_group_id: userGroupId,
+        },
+      );
+
+      return row.count > 0;
+    },
+
+    recordGroupOptOut({ userId, userGroupId, optedOutAtUtc }) {
+      bindAndRun(
+        database,
+        `
+        INSERT OR IGNORE INTO group_opt_outs (user_id, user_group_id, opted_out_at_utc)
+        VALUES ($user_id, $user_group_id, $opted_out_at_utc)
+      `,
+        {
+          $user_id: userId,
+          $user_group_id: userGroupId,
+          $opted_out_at_utc: optedOutAtUtc || new Date().toISOString(),
+        },
+      );
+      persist();
     },
 
     getSyncSettings() {

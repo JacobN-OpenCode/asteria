@@ -28,6 +28,7 @@
         "lists:read",
         "lists:write",
         "usergroups:read",
+        "usergroups:write",
         "users.profile:read"
       ]
     }

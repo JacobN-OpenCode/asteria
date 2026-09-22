@@ -1,4 +1,5 @@
-import { fetchUserGroups, sendDailyQuestion, sendDailyUpdate, sendWelcomeMessage } from '../services/slack.js';
+import { fetchUserGroups, sendDailyQuestion, sendDailyUpdate, sendWelcomeMessage, addUserToUserGroup, removeUserFromUserGroup, sendDirectMessage } from '../services/slack.js';
+import { createHomeAssistantService } from '../services/home-assistant.js';
 import { contentToMrkdwn, formatDailyQuestionMessage } from '../utils/messages.js';
 import { getLocalDateKey, isValidTimeZone, normalizeTimeValue } from '../utils/time.js';
 import {
@@ -51,7 +52,12 @@ async function openModal(client, triggerId, view) {
   });
 }
 
-export function createHomeHandlers({ app, store, aiService }) {
+export function createHomeHandlers({ app, store, aiService, environment, scheduler }) {
+  const homeAssistantService = createHomeAssistantService({
+    getSettings: () => store.getSettings(),
+    logger: app.logger,
+  });
+
   async function publishTab(client, userId, tab, notice = '') {
     const settings = store.getSettings();
     const syncSettings = store.getSyncSettings();
@@ -323,7 +329,13 @@ export function createHomeHandlers({ app, store, aiService }) {
         questionText = lastQuestion.question_text;
       }
 
-      const sendResult = await sendDailyUpdate(client, settings, draft, questionText, { sentByUserId: body.user.id });
+      const stepsResult = await homeAssistantService.fetchSteps();
+      const stepsText = stepsResult?.steps != null ? `Today's Steps: ${stepsResult.steps}` : '';
+
+      const sendResult = await sendDailyUpdate(client, settings, draft, questionText, {
+        sentByUserId: body.user.id,
+        stepsText,
+      });
 
       store.recordDailyUpdateSend({
         sent_at_utc: new Date().toISOString(),
@@ -539,7 +551,7 @@ export function createHomeHandlers({ app, store, aiService }) {
     }
 
     const viewState = body.view.state.values;
-    store.updateSyncSettings({
+    const patch = {
       enabled: getCheckboxEnabled(viewState, 'sync_enabled_block', 'sync_enabled'),
       todoist_api_token: getInputValue(viewState, 'sync_todoist_api_token_block', 'sync_todoist_api_token'),
       slack_list_id: getInputValue(viewState, 'sync_slack_list_id_block', 'sync_slack_list_id'),
@@ -550,10 +562,70 @@ export function createHomeHandlers({ app, store, aiService }) {
         'sync_notification_channel_id',
       ),
       poll_interval_seconds: getInputValue(viewState, 'sync_poll_interval_block', 'sync_poll_interval'),
-      webhook_secret: getInputValue(viewState, 'sync_webhook_secret_block', 'sync_webhook_secret'),
-    });
+    };
+    const webhookSecretInput = getInputValue(viewState, 'sync_webhook_secret_block', 'sync_webhook_secret');
+    if (webhookSecretInput) {
+      patch.webhook_secret = webhookSecretInput;
+    }
+    store.updateSyncSettings(patch);
 
     await publishTab(client, body.user.id, 'sync', ':white_check_mark: Sync settings saved.');
+  }
+
+  async function handleSaveHomeAssistantSettings({ ack, body, client }) {
+    await ack();
+    const settings = store.getSettings();
+    if (body.user.id !== settings.personal_channel_owner_id) {
+      await publishTab(
+        client,
+        body.user.id,
+        'home-assistant',
+        ':warning: Only the configured owner can change Home Assistant settings.',
+      );
+      return;
+    }
+
+    const viewState = body.view.state.values;
+    store.updateSettings({
+      home_assistant_url: getInputValue(viewState, 'home_assistant_url_block', 'home_assistant_url'),
+      home_assistant_token: getInputValue(viewState, 'home_assistant_token_block', 'home_assistant_token'),
+      home_assistant_steps_entity: getInputValue(viewState, 'home_assistant_steps_entity_block', 'home_assistant_steps_entity'),
+    });
+
+    await publishTab(client, body.user.id, 'home-assistant', ':white_check_mark: Home Assistant settings saved.');
+  }
+
+  async function handleTestHomeAssistantSteps({ ack, body, client }) {
+    await ack();
+    const settings = store.getSettings();
+    if (body.user.id !== settings.personal_channel_owner_id) {
+      await publishTab(client, body.user.id, 'home-assistant', ':warning: Only the configured owner can test Home Assistant.');
+      return;
+    }
+
+    const result = await homeAssistantService.fetchSteps();
+
+    if (!result.configured) {
+      await publishTab(
+        client,
+        body.user.id,
+        'home-assistant',
+        ':x: Configure the Home Assistant URL, token, and steps entity first.',
+      );
+      return;
+    }
+
+    if (result.error) {
+      await publishTab(client, body.user.id, 'home-assistant', `:x: Could not fetch steps: ${result.error}`);
+      return;
+    }
+
+    await publishTab(
+      client,
+      body.user.id,
+      'home-assistant',
+      `:white_check_mark: Current step count: *${result.steps}*`,
+    );
   }
 
   async function handleAppHomeOpened({ event, client }) {
@@ -597,14 +669,115 @@ export function createHomeHandlers({ app, store, aiService }) {
           messageTs: response.ts,
         });
       }
+
+      const pingGroupId = settings.daily_update_ping_user_group_id;
+      if (pingGroupId && !store.hasGroupOptOut({ userId: event.user, userGroupId: pingGroupId })) {
+        try {
+          await addUserToUserGroup(client, pingGroupId, event.user);
+        } catch (groupError) {
+          logger.error('Failed to auto-add member to Daily Update group', groupError);
+        }
+
+        try {
+          await client.chat.postEphemeral({
+            channel: event.channel,
+            user: event.user,
+            text: `You've been automatically added to <!subteam^${pingGroupId}> so you'll get the Daily Update.`,
+            blocks: [
+              {
+                type: 'section',
+                text: {
+                  type: 'mrkdwn',
+                  text: `You've been automatically added to <!subteam^${pingGroupId}> so you'll get the Daily Update.`,
+                },
+              },
+              {
+                type: 'actions',
+                block_id: 'dag_opt_out_block',
+                elements: [
+                  {
+                    type: 'button',
+                    text: { type: 'plain_text', text: 'Opt out of the Daily Update' },
+                    action_id: 'opt_out_of_dag',
+                    value: JSON.stringify({
+                      userId: event.user,
+                      userGroupId: pingGroupId,
+                    }),
+                    style: 'danger',
+                  },
+                ],
+              },
+            ],
+          });
+        } catch (ephemeralError) {
+          logger.error('Failed to post opt-out ephemeral to new member', ephemeralError);
+        }
+      }
     } catch (error) {
       logger.error('Failed to send welcome message', error);
+    }
+  }
+
+  async function handleOptOutOfDag({ ack, body, client, logger }) {
+    await ack();
+
+    let payload = { userId: '', userGroupId: '' };
+    try {
+      payload = JSON.parse(body.actions?.[0]?.value || '{}');
+    } catch {
+      logger.error('Invalid opt-out payload', body.actions?.[0]?.value);
+    }
+
+    const { userId, userGroupId } = payload;
+    const settings = store.getSettings();
+    const ownerId = settings.personal_channel_owner_id;
+    const groupId = userGroupId || settings.daily_update_ping_user_group_id;
+
+    if (!userId || !groupId) {
+      return;
+    }
+
+    if (groupId && store.hasGroupOptOut({ userId, userGroupId: groupId })) {
+      return;
+    }
+
+    if (groupId) {
+      store.recordGroupOptOut({ userId, userGroupId: groupId, optedOutAtUtc: new Date().toISOString() });
+    }
+
+    try {
+      await removeUserFromUserGroup(client, groupId, userId);
+    } catch (groupError) {
+      logger.error('Failed to remove opted-out member from Daily Update group', groupError);
+    }
+
+    try {
+      await client.chat.postEphemeral({
+        channel: body.channel?.id || settings.personal_channel_id,
+        user: userId,
+        text: "You've opted out of the Daily Update. Someone's been notified.",
+      });
+    } catch (ephemeralError) {
+      logger.error('Failed to confirm opt-out to member', ephemeralError);
+    }
+
+    if (ownerId) {
+      try {
+        await sendDirectMessage(
+          client,
+          ownerId,
+          `<@${userId}> opted out of the Daily Update group (<!subteam^${groupId}>).`,
+        );
+      } catch (dmError) {
+        logger.error('Failed to notify owner of Daily Update opt-out', dmError);
+      }
     }
   }
 
   app.action('navigate_daily_update', (payload) => handleNavigation('daily-update', payload));
   app.action('navigate_daily_question', (payload) => handleNavigation('daily-question', payload));
   app.action('navigate_welcomer', (payload) => handleNavigation('welcomer', payload));
+  app.action('navigate_home_assistant', (payload) => handleNavigation('home-assistant', payload));
   app.action('navigate_sync', (payload) => handleNavigation('sync', payload));
   app.action('navigate_settings', (payload) => handleNavigation('settings', payload));
   app.action('open_daily_update_modal', handleOpenDailyUpdateModal);
@@ -620,6 +793,9 @@ export function createHomeHandlers({ app, store, aiService }) {
   app.action('save_welcomer_settings', handleSaveWelcomerSettings);
   app.action('save_general_settings', handleSaveGeneralSettings);
   app.action('save_sync_settings', handleSaveSyncSettings);
+  app.action('save_home_assistant_settings', handleSaveHomeAssistantSettings);
+  app.action('test_home_assistant_steps', handleTestHomeAssistantSteps);
+  app.action('opt_out_of_dag', handleOptOutOfDag);
   app.view('compose_daily_update_submit', handleComposeDailyUpdateSubmit);
   app.view('edit_thread_message_submit', handleEditThreadMessageSubmit);
   app.view('edit_welcome_message_submit', handleEditWelcomeMessageSubmit);

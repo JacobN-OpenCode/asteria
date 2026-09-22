@@ -10,16 +10,16 @@ import http from 'node:http';
  * Constant-time HMAC comparison for the Todoist signature header.
  * @param {string} rawBody
  * @param {string} secret
- * @param {string} expectedSignature hex/base64 signature from the X-Todoist-Hmac-SHA256 header
+ * @param {string} expectedSignature base64 signature from the X-Todoist-Hmac-SHA256 header
  * @returns {boolean}
  */
 function verifySignature(rawBody, secret, expectedSignature) {
   if (!expectedSignature || !secret) {
     return false;
   }
-  const hmac = crypto.createHmac('sha256', secret).update(rawBody, 'utf8').digest('hex');
-  const expected = Buffer.from(expectedSignature, 'hex');
-  const actual = Buffer.from(hmac, 'hex');
+  const hmac = crypto.createHmac('sha256', secret).update(rawBody, 'utf8').digest('base64');
+  const expected = Buffer.from(expectedSignature, 'base64');
+  const actual = Buffer.from(hmac, 'base64');
   if (expected.length !== actual.length) {
     return false;
   }
@@ -88,6 +88,7 @@ export function createWebhookServer({ sync, getSettings, logger, port = 8792 }) 
     res.writeHead(200, { 'Content-Type': 'application/json' });
     res.end(JSON.stringify({ ok: true }));
 
+    logger?.info?.(`Todoist webhook received: ${event.event_name ?? 'unknown'} (${event.event_data?.id ?? 'no id'})`);
     try {
       await sync.handleTodoistEvent(event, settings);
     } catch (error) {
