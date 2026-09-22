@@ -1,5 +1,6 @@
 /**
- * Thin Todoist REST v2 client with project caching and 429 rate-limit backoff.
+ * Thin Todoist v1 (unified) API client with project caching and 429 rate-limit backoff.
+ * Builds on the REST endpoints under /api/v1 (tasks, projects).
  * @typedef {import('./types.js').TodoistClientDeps} TodoistClientDeps
  */
 import { sleep } from './util.js';
@@ -23,16 +24,12 @@ export function createTodoistClient({ apiToken, baseUrl, logger, maxRetries = DE
    * @param {object} [options]
    * @param {'GET'|'POST'} [options.method]
    * @param {object} [options.body]
-   * @param {string} [options.idempotencyKey] UUID for POST commands so retries are safe.
    */
-  async function request(path, { method = 'GET', body, idempotencyKey } = {}) {
+  async function request(path, { method = 'GET', body } = {}) {
     const headers = {
       Authorization: `Bearer ${apiToken}`,
       'Content-Type': 'application/json',
     };
-    if (body) {
-      headers['Idempotency-Key'] = idempotencyKey ?? globalThis.crypto?.randomUUID?.() ?? String(Date.now());
-    }
 
     let attempt = 0;
     for (;;) {
@@ -72,7 +69,11 @@ export function createTodoistClient({ apiToken, baseUrl, logger, maxRetries = DE
         return null;
       }
 
-      return response.json();
+      const text = await response.text().catch(() => '');
+      if (!text) {
+        return null;
+      }
+      return JSON.parse(text);
     }
   }
 
@@ -81,8 +82,13 @@ export function createTodoistClient({ apiToken, baseUrl, logger, maxRetries = DE
       return cachedProjectId;
     }
 
-    const projects = await request('/projects');
-    const matchingProject = (Array.isArray(projects) ? projects : []).find((project) => project.name === name);
+    const projectsResponse = await request('/projects?limit=200');
+    const projects = Array.isArray(projectsResponse)
+      ? projectsResponse
+      : Array.isArray(projectsResponse?.results)
+        ? projectsResponse.results
+        : [];
+    const matchingProject = projects.find((project) => project.name === name);
     if (matchingProject) {
       cachedProjectId = matchingProject.id;
       cachedProjectName = name;

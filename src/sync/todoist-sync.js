@@ -23,7 +23,7 @@ export function createTodoistSync({ store, client, logger, environment, todoistC
       const createClient = todoistClientFactory ?? createTodoistClient;
       instance = createClient({
         apiToken,
-        baseUrl: environment.todoistApiBaseUrl ?? 'https://api.todoist.com/rest/v2',
+        baseUrl: environment.todoistApiBaseUrl ?? 'https://api.todoist.com/api/v1',
         logger,
       });
       todoistClientsByToken.set(apiToken, instance);
@@ -64,6 +64,10 @@ export function createTodoistSync({ store, client, logger, environment, todoistC
       const dueDate = syncListClient.extractDueDate(item, columnMap);
       const addedBy = syncListClient.extractAddedBy(item);
       const fingerprint = `${name}|${isCompleted}|${dueDate ?? ''}`;
+
+      if (!name) {
+        continue;
+      }
 
       const existingSyncItem = store.getSyncItemBySlackItemId(slackItemId);
 

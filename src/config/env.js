@@ -41,6 +41,6 @@ export function loadEnvironment() {
     syncPollIntervalSeconds: parsePositiveInteger(process.env.TODOIST_SYNC_POLL_INTERVAL_SECONDS, 300),
     todoistWebhookSecret: process.env.TODOIST_WEBHOOK_SECRET ?? '',
     todoistWebhookPort: parsePositiveInteger(process.env.ASTERIA_WEBHOOK_PORT, 8792),
-    todoistApiBaseUrl: process.env.TODOIST_API_BASE_URL ?? 'https://api.todoist.com/rest/v2',
+    todoistApiBaseUrl: process.env.TODOIST_API_BASE_URL ?? 'https://api.todoist.com/api/v1',
   };
 }

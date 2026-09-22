@@ -9,6 +9,8 @@
 const COLUMN_TYPE_TEXT = 'text';
 const COLUMN_TYPE_CHECKBOX = 'checkbox';
 const COLUMN_TYPE_DATE = 'date';
+const COLUMN_TYPE_TODO_COMPLETED = 'todo_completed';
+const COLUMN_TYPE_TODO_DUE_DATE = 'todo_due_date';
 
 /**
  * @param {SlackListDeps} deps
@@ -29,7 +31,13 @@ export function createSlackListClient({ client }) {
   async function listItems(inputListId, limit = 100) {
     const listId = requireListId(inputListId);
     const response = await client.slackLists.items.list({ list_id: listId, include_list: true, limit });
-    const columns = Array.isArray(response?.list?.schema) ? response.list.schema : [];
+    const metadataSchema = response?.list?.list_metadata?.schema;
+    const responseSchema = response?.list?.schema;
+    const columns = Array.isArray(metadataSchema)
+      ? metadataSchema
+      : Array.isArray(responseSchema)
+        ? responseSchema
+        : [];
     const columnMap = new Map(columns.map((column) => [column.id, column]));
     const items = Array.isArray(response?.items) ? response.items : [];
     return { items, columns, columnMap };
@@ -104,7 +112,10 @@ export function createSlackListClient({ client }) {
   function extractCompletion(item, columnMap) {
     const fields = Array.isArray(item?.fields) ? item.fields : [];
     const checkboxColumn = Array.from(columnMap.values()).find(
-      (column) => column.type === COLUMN_TYPE_CHECKBOX || column.facet_type === 'todo_completed',
+      (column) =>
+        column.type === COLUMN_TYPE_TODO_COMPLETED ||
+        column.type === COLUMN_TYPE_CHECKBOX ||
+        column.facet_type === 'todo_completed',
     );
     if (!checkboxColumn) {
       return false;
@@ -126,7 +137,10 @@ export function createSlackListClient({ client }) {
   function extractDueDate(item, columnMap) {
     const fields = Array.isArray(item?.fields) ? item.fields : [];
     const dateColumn = Array.from(columnMap.values()).find(
-      (column) => column.type === COLUMN_TYPE_DATE || column.facet_type === 'todo_due_date',
+      (column) =>
+        column.type === COLUMN_TYPE_TODO_DUE_DATE ||
+        column.type === COLUMN_TYPE_DATE ||
+        column.facet_type === 'todo_due_date',
     );
     if (!dateColumn) {
       return null;
@@ -158,7 +172,10 @@ export function createSlackListClient({ client }) {
   async function setItemCompletion(input) {
     const listId = requireListId(input.listId);
     const checkboxColumn = Array.from(input.columnMap.values()).find(
-      (column) => column.type === COLUMN_TYPE_CHECKBOX || column.facet_type === 'todo_completed',
+      (column) =>
+        column.type === COLUMN_TYPE_TODO_COMPLETED ||
+        column.type === COLUMN_TYPE_CHECKBOX ||
+        column.facet_type === 'todo_completed',
     );
     if (!checkboxColumn) {
       throw new Error('List has no checkbox column to complete items against');
