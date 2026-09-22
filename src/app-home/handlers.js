@@ -539,7 +539,7 @@ export function createHomeHandlers({ app, store, aiService }) {
     }
 
     const viewState = body.view.state.values;
-    store.updateSyncSettings({
+    const patch = {
       enabled: getCheckboxEnabled(viewState, 'sync_enabled_block', 'sync_enabled'),
       todoist_api_token: getInputValue(viewState, 'sync_todoist_api_token_block', 'sync_todoist_api_token'),
       slack_list_id: getInputValue(viewState, 'sync_slack_list_id_block', 'sync_slack_list_id'),
@@ -550,8 +550,12 @@ export function createHomeHandlers({ app, store, aiService }) {
         'sync_notification_channel_id',
       ),
       poll_interval_seconds: getInputValue(viewState, 'sync_poll_interval_block', 'sync_poll_interval'),
-      webhook_secret: getInputValue(viewState, 'sync_webhook_secret_block', 'sync_webhook_secret'),
-    });
+    };
+    const webhookSecretInput = getInputValue(viewState, 'sync_webhook_secret_block', 'sync_webhook_secret');
+    if (webhookSecretInput) {
+      patch.webhook_secret = webhookSecretInput;
+    }
+    store.updateSyncSettings(patch);
 
     await publishTab(client, body.user.id, 'sync', ':white_check_mark: Sync settings saved.');
   }

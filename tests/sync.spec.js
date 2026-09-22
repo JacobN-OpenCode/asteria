@@ -220,20 +220,27 @@ describe('Slack list client', () => {
 });
 
 describe('Todoist webhook signature', () => {
-  it('accepts a valid SHA256 HMAC signature', () => {
+  it('accepts a valid SHA256 HMAC signature (Todoist base64 format)', () => {
     const secret = 'shhh';
     const body = JSON.stringify({ event_name: 'item:completed' });
-    const signature = crypto.createHmac('sha256', secret).update(body, 'utf8').digest('hex');
+    const signature = crypto.createHmac('sha256', secret).update(body, 'utf8').digest('base64');
     assert.equal(verifySignature(body, secret, signature), true);
   });
 
   it('rejects a tampered or missing signature', () => {
     const secret = 'shhh';
     const body = JSON.stringify({ event_name: 'item:completed' });
-    const signature = crypto.createHmac('sha256', secret).update(body, 'utf8').digest('hex');
+    const signature = crypto.createHmac('sha256', secret).update(body, 'utf8').digest('base64');
     assert.equal(verifySignature(body, secret, `${signature.slice(0, 10)}deadbeef`), false);
     assert.equal(verifySignature(body, secret, ''), false);
     assert.equal(verifySignature(body, secret, signature), true);
+  });
+
+  it('rejects a hex-encoded signature (only base64 is accepted)', () => {
+    const secret = 'shhh';
+    const body = JSON.stringify({ event_name: 'item:completed' });
+    const hexSignature = crypto.createHmac('sha256', secret).update(body, 'utf8').digest('hex');
+    assert.equal(verifySignature(body, secret, hexSignature), false);
   });
 });
 

@@ -17,9 +17,9 @@ function verifySignature(rawBody, secret, expectedSignature) {
   if (!expectedSignature || !secret) {
     return false;
   }
-  const hmac = crypto.createHmac('sha256', secret).update(rawBody, 'utf8').digest('hex');
-  const expected = Buffer.from(expectedSignature, 'hex');
-  const actual = Buffer.from(hmac, 'hex');
+  const hmac = crypto.createHmac('sha256', secret).update(rawBody, 'utf8').digest('base64');
+  const expected = Buffer.from(expectedSignature, 'base64');
+  const actual = Buffer.from(hmac, 'base64');
   if (expected.length !== actual.length) {
     return false;
   }
