@@ -11,6 +11,7 @@ function buildTabs(activeTab) {
     { id: 'daily-update', label: 'Daily Update' },
     { id: 'daily-question', label: 'Daily Question' },
     { id: 'welcomer', label: 'Welcomer' },
+    { id: 'home-assistant', label: 'Home Assistant' },
     { id: 'sync', label: 'Sync' },
     { id: 'settings', label: 'Settings' },
   ];
@@ -654,6 +655,119 @@ function buildSyncView({ settings, notice, isOwner }) {
   };
 }
 
+function buildHomeAssistantView({ settings, notice, isOwner, stepsSummary }) {
+  const configured = Boolean(settings.home_assistant_url && settings.home_assistant_token && settings.home_assistant_steps_entity);
+
+  return {
+    type: 'home',
+    callback_id: 'asteria_home_home_assistant',
+    blocks: [
+      { type: 'header', text: { type: 'plain_text', text: 'Asteria' } },
+      ...buildBanner(notice),
+      buildTabs('home-assistant'),
+      {
+        type: 'section',
+        text: {
+          type: 'mrkdwn',
+          text: 'Pull your daily step count from Home Assistant and include it in the Daily Update.',
+        },
+      },
+      ...(!isOwner
+        ? [
+            {
+              type: 'section',
+              text: {
+                type: 'mrkdwn',
+                text: 'Only the configured personal channel owner can change Home Assistant settings.',
+              },
+            },
+          ]
+        : [
+            {
+              type: 'context',
+              elements: [
+                {
+                  type: 'mrkdwn',
+                  text: configured ? '*Status:* Configured' : '*Status:* Not configured',
+                },
+              ],
+            },
+            ...(stepsSummary
+              ? [
+                  {
+                    type: 'section',
+                    text: {
+                      type: 'mrkdwn',
+                      text: stepsSummary,
+                    },
+                  },
+                ]
+              : []),
+            {
+              type: 'input',
+              block_id: 'home_assistant_url_block',
+              label: { type: 'plain_text', text: 'Home Assistant URL' },
+              element: {
+                type: 'plain_text_input',
+                action_id: 'home_assistant_url',
+                initial_value: settings.home_assistant_url || '',
+                placeholder: { type: 'plain_text', text: 'https://home.example.com' },
+              },
+            },
+            {
+              type: 'input',
+              block_id: 'home_assistant_token_block',
+              label: { type: 'plain_text', text: 'Long-lived access token' },
+              element: {
+                type: 'password',
+                action_id: 'home_assistant_token',
+                initial_value: settings.home_assistant_token || '',
+                placeholder: { type: 'plain_text', text: 'Long-lived access token' },
+              },
+            },
+            {
+              type: 'input',
+              block_id: 'home_assistant_steps_entity_block',
+              label: { type: 'plain_text', text: 'Steps counter entity ID' },
+              element: {
+                type: 'plain_text_input',
+                action_id: 'home_assistant_steps_entity',
+                initial_value: settings.home_assistant_steps_entity || '',
+                placeholder: { type: 'plain_text', text: 'sensor.step_counter' },
+              },
+            },
+            {
+              type: 'actions',
+              block_id: 'home_assistant_actions',
+              elements: [
+                {
+                  type: 'button',
+                  action_id: 'save_home_assistant_settings',
+                  text: { type: 'plain_text', text: 'Save Home Assistant Settings' },
+                  style: 'primary',
+                },
+              ],
+            },
+            ...(configured
+              ? [
+                  {
+                    type: 'actions',
+                    block_id: 'home_assistant_test_actions',
+                    elements: [
+                      {
+                        type: 'button',
+                        action_id: 'test_home_assistant_steps',
+                        text: { type: 'plain_text', text: ':mag: Test steps fetch' },
+                      },
+                    ],
+                  },
+                ]
+              : []),
+          ]),
+    ],
+  };
+}
+
 function buildSettingsView({ settings, notice }) {
   return {
     type: 'home',
@@ -833,6 +947,10 @@ export function buildHomeView({
 
   if (tab === 'welcomer') {
     return buildWelcomerView({ settings, notice });
+  }
+
+  if (tab === 'home-assistant') {
+    return buildHomeAssistantView({ settings, notice, isOwner });
   }
 
   if (tab === 'sync') {

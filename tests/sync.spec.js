@@ -190,14 +190,14 @@ describe('Todoist webhook signature', () => {
   it('accepts a valid SHA256 HMAC signature', () => {
     const secret = 'shhh';
     const body = JSON.stringify({ event_name: 'item:completed' });
-    const signature = crypto.createHmac('sha256', secret).update(body, 'utf8').digest('hex');
+    const signature = crypto.createHmac('sha256', secret).update(body, 'utf8').digest('base64');
     assert.equal(verifySignature(body, secret, signature), true);
   });
 
   it('rejects a tampered or missing signature', () => {
     const secret = 'shhh';
     const body = JSON.stringify({ event_name: 'item:completed' });
-    const signature = crypto.createHmac('sha256', secret).update(body, 'utf8').digest('hex');
+    const signature = crypto.createHmac('sha256', secret).update(body, 'utf8').digest('base64');
     assert.equal(verifySignature(body, secret, `${signature.slice(0, 10)}deadbeef`), false);
     assert.equal(verifySignature(body, secret, ''), false);
     assert.equal(verifySignature(body, secret, signature), true);

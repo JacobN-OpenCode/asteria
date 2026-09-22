@@ -20,6 +20,7 @@ export function formatDailyUpdateMessage({
   songText,
   eventText,
   questionText,
+  stepsText,
   includeQuestion = false,
 }) {
   const messageSections = [];
@@ -43,6 +44,7 @@ export function formatDailyUpdateMessage({
   const footerLines = [];
   const songLine = trimOrEmpty(songText);
   const eventLine = trimOrEmpty(eventText);
+  const stepsLine = trimOrEmpty(stepsText);
 
   if (songLine) {
     footerLines.push(`Song of the Day: ${songLine}`);
@@ -50,6 +52,10 @@ export function formatDailyUpdateMessage({
 
   if (eventLine) {
     footerLines.push(`Event of the Day: ${eventLine}`);
+  }
+
+  if (stepsLine) {
+    footerLines.push(stepsLine);
   }
 
   if (footerLines.length > 0) {
