@@ -3,6 +3,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { afterEach, describe, it, mock } from 'node:test';
+import { buildHuddlesView } from '../src/app-home/views.js';
 import { createStore } from '../src/database/store.js';
 import {
   computeHuddleStats,
@@ -255,6 +256,40 @@ describe('huddle thread message stats', () => {
       memberIds: [],
     });
     assert.equal(result, null);
+  });
+});
+
+describe('huddles app home tab', () => {
+  it('lists huddles with channel and local date, most recent first', () => {
+    const view = buildHuddlesView({
+      timezone: 'UTC',
+      notice: '',
+      huddles: [
+        {
+          call_id: 'R1',
+          channel_id: 'C123',
+          started_at: 1754300000,
+          status: 'ended',
+        },
+        {
+          call_id: 'R2',
+          channel_id: '',
+          started_at: 1754213600,
+          status: 'active',
+        },
+      ],
+    });
+
+    assert.equal(view.type, 'home');
+    assert(view.blocks.some((block) => block.text?.text.includes('<#C123>')));
+    assert(view.blocks.some((block) => block.text?.text.includes('Aug 2025')));
+    assert(view.blocks.some((block) => block.text?.text.includes('active now')));
+    assert(view.blocks.some((block) => block.text?.text.includes('unknown channel')));
+  });
+
+  it('shows an empty state when no huddles exist', () => {
+    const view = buildHuddlesView({ timezone: 'UTC', notice: '', huddles: [] });
+    assert(view.blocks.some((block) => block.text?.text.includes('No huddles recorded yet')));
   });
 });
 

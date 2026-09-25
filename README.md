@@ -259,6 +259,7 @@ When a huddle starts, Asteria tracks attendance through Slack's workspace-wide `
 Presence is tracked per (call, user); per-session gaps are approximated from first/last seen timestamps.
 
 - The huddle starter gets the review prompt, falling back to the owner, then to the first person who joined.
+- The App Home has a **Huddles** tab listing every huddle Asteria has seen (channel + local date), most recent first.
 - Messages only count towards the longest/shortest stats if they were sent by a known participant inside the huddle's time window.
 - A `user_huddle_changed` event requires `users:read`; reading a huddle's chat thread requires the `*:history` scopes and the `message.*` event subscriptions enabled in the app manifest. Reinstall the app from the updated `manifest.json` for these to take effect.
 - Huddles left open longer than 12 hours with no active members are finalized automatically.
