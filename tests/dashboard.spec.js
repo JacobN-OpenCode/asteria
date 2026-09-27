@@ -312,6 +312,36 @@ describe('dashboard server', () => {
     }
   });
 
+  it('explains itself when Slack will not let the bot open a DM', async () => {
+    const client = createSlackClientDouble();
+    client.conversations.open = mock.fn(async () => {
+      throw Object.assign(new Error('An API error occurred: channel_not_found'), {
+        data: { error: 'channel_not_found' },
+      });
+    });
+    const harness = await startDashboard({ client });
+    try {
+      const response = await fetch(`${harness.base}/api/auth/code`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ slackUserId: 'U0AEYDUCLKF' }),
+      });
+      assert.equal(response.status, 400, 'the visitor can fix this, so it is not a 500');
+      assert.match((await response.json()).error, /start a chat with the Asteria bot/);
+      // A code that was never delivered must not sit in memory waiting to be
+      // guessed for ten minutes.
+      const verify = await fetch(`${harness.base}/api/auth/verify`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ slackUserId: 'U0AEYDUCLKF', code: '424242' }),
+      });
+      assert.equal(verify.status, 400);
+      assert.match((await verify.json()).error, /Request a new code first/);
+    } finally {
+      await harness.stop();
+    }
+  });
+
   it('sends /login to the sign in panel when the app has no oauth client', async () => {
     const harness = await startDashboard();
     try {

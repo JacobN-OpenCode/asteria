@@ -3,6 +3,16 @@ import crypto from 'node:crypto';
 const CODE_TTL_MS = 10 * 60 * 1000;
 const CODE_LENGTH = 6;
 
+// Anything the visitor can act on. The status code travels with the error so
+// the route can answer 400 with the sentence instead of 500 with a shrug.
+class UserFacingError extends Error {
+  constructor(message, status = 400) {
+    super(message);
+    this.name = 'UserFacingError';
+    this.status = status;
+  }
+}
+
 export function createDashboardAuth({ client, store, logger = console, slackClientId = '', slackClientSecret = '' }) {
   const oauthConfigured = Boolean(slackClientId && slackClientSecret);
   const codes = new Map();
@@ -74,15 +84,43 @@ export function createDashboardAuth({ client, store, logger = console, slackClie
    */
   async function startDmVerification(slackUserId) {
     if (!/^[UW][A-Z0-9]{7,}$/.test(String(slackUserId || ''))) {
-      throw new Error('That does not look like a Slack member ID (it starts with U or W).');
+      throw new UserFacingError('That does not look like a Slack member ID. It starts with U or W, like U0123456789.');
     }
     const code = String(crypto.randomInt(0, 10 ** CODE_LENGTH)).padStart(CODE_LENGTH, '0');
     codes.set(slackUserId, { code, createdAt: Date.now() });
-    const opener = await client.conversations.open({ user: slackUserId });
-    await client.chat.postMessage({
-      channel: opener.channel.id,
-      text: `Your Asteria dashboard sign-in code is *${code}*. It expires in 10 minutes. If this wasn't you, ignore this message.`,
-    });
+    let opener;
+    try {
+      opener = await client.conversations.open({ user: slackUserId });
+    } catch (error) {
+      codes.delete(slackUserId);
+      // Slack refuses to start a DM the bot has no permission to start, which
+      // is what happens without the im:write scope. An existing DM still opens
+      // fine, so the fix is on the visitor's side and we can say so.
+      if (
+        /^(channel_not_found|missing_scope|not_in_channel|user_not_visible|account_inactive)$/.test(
+          error?.data?.error || '',
+        )
+      ) {
+        throw new UserFacingError(
+          'I could not open a DM with you on Slack. Open Slack, start a chat with the Asteria bot and send anything, then try this again.',
+        );
+      }
+      throw error;
+    }
+    try {
+      await client.chat.postMessage({
+        channel: opener.channel.id,
+        text: `Your Asteria dashboard sign-in code is *${code}*. It expires in 10 minutes. If this wasn't you, ignore this message.`,
+      });
+    } catch (error) {
+      codes.delete(slackUserId);
+      if (/^(channel_not_found|not_in_channel|channel_not_found)$/.test(error?.data?.error || '')) {
+        throw new UserFacingError(
+          'Your DM went through but I could not post to it. Check that the Asteria bot is not blocked.',
+        );
+      }
+      throw error;
+    }
     return { slackUserId, channelId: opener.channel.id };
   }
 
