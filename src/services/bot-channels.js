@@ -1,6 +1,10 @@
 const CACHE_MS = 5 * 60 * 1000;
 const MEMBERSHIP_PAGE_SIZE = 999;
 
+function isMissingScope(error) {
+  return error?.data?.error === 'missing_scope' || /missing_scope/.test(String(error?.message || ''));
+}
+
 /**
  * The channels the bot itself is a member of.
  *
@@ -47,14 +51,14 @@ export function createBotChannelDirectory({ client, logger }) {
       return cache.ok ? cache.ids : [];
     }
     const startedAt = Date.now();
-    try {
+    const fetchIds = async (types) => {
       const user = await resolveBotUserId();
       const ids = [];
       let cursor = '';
       do {
         const page = await client.users.conversations({
           user,
-          types: includeDms ? 'public_channel,private_channel,mpim,im' : 'public_channel,private_channel',
+          types,
           exclude_archived: true,
           limit: MEMBERSHIP_PAGE_SIZE,
           ...(cursor ? { cursor } : {}),
@@ -66,6 +70,28 @@ export function createBotChannelDirectory({ client, logger }) {
         }
         cursor = page?.response_metadata?.next_cursor || '';
       } while (cursor);
+      return ids;
+    };
+
+    try {
+      const types = includeDms ? 'public_channel,private_channel,mpim,im' : 'public_channel,private_channel';
+      let ids;
+      try {
+        ids = await fetchIds(types);
+      } catch (error) {
+        // Reading DM membership needs im:read and mpim:read, which this app does
+        // not have, so Slack rejects the whole request. Letting that empty the
+        // cache made every huddle look unverifiable and silently scored it zero,
+        // including the channel huddles that have nothing to do with DMs. Channels
+        // are the common case and readable, so fall back to those and say why.
+        if (!includeDms || !isMissingScope(error)) {
+          throw error;
+        }
+        logger?.warn?.(
+          'App cannot read DM or group-DM membership (needs im:read and mpim:read), so huddles held in a DM cannot be verified for points; continuing with channels only',
+        );
+        ids = await fetchIds('public_channel,private_channel');
+      }
       caches[key] = { ids, fetchedAt: now, ok: true };
       logger?.info?.(
         `Bot is in ${ids.length} ${includeDms ? 'channel(s) or DMs' : 'channel(s)'}; membership lookup took ${Date.now() - startedAt}ms`,

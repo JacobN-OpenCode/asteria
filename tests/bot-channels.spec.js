@@ -67,4 +67,33 @@ describe('bot channel directory', () => {
     assert.deepEqual(await directory.list(), [], 'shows nothing rather than every known channel');
     assert.equal(logger.error.mock.callCount(), 1, 'the failure is logged, not hidden');
   });
+  it('falls back to channels when the app cannot read DM membership', async () => {
+    const seenTypes = [];
+    const client = {
+      auth: { test: mock.fn(async () => ({ user_id: 'UBOT' })) },
+      users: {
+        conversations: mock.fn(async ({ types }) => {
+          seenTypes.push(types);
+          if (types.includes('mpim')) {
+            const error = new Error('An API error occurred: missing_scope');
+            error.data = { error: 'missing_scope', needed: 'mpim:read' };
+            throw error;
+          }
+          return { channels: [{ id: 'Cbot' }] };
+        }),
+      },
+      conversations: { list: mock.fn(async () => ({ channels: [] })) },
+    };
+    const logger = { info: mock.fn(), warn: mock.fn(), error: mock.fn() };
+    const directory = createBotChannelDirectory({ client, logger });
+
+    assert.deepEqual(
+      await directory.list({ includeDms: true }),
+      ['Cbot'],
+      'a DM scope failure must not empty the channel list and score every huddle zero',
+    );
+    assert.deepEqual(seenTypes, ['public_channel,private_channel,mpim,im', 'public_channel,private_channel']);
+    assert.equal(logger.warn.mock.callCount(), 1);
+    assert.equal(logger.error.mock.callCount(), 0, 'this is a degraded fallback, not a failure');
+  });
 });
