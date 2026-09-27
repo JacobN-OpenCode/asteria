@@ -127,13 +127,16 @@ export function createDashboardServer({ store, client, botChannels, logger = con
 
     if (route === '/login') {
       if (!auth.oauthConfigured) {
-        redirect(res, '/#signin-panel');
+        // Slack sign-in is the only way in now, so there is nothing to send them to.
+        redirect(res, '/');
         return;
       }
       const state = auth.randomState();
-      const cookie = `asteria_oauth_state=${state}; Path=/; HttpOnly; SameSite=Lax; Max-Age=600${isSecure(req) ? '; Secure' : ''}`;
+      const nonce = auth.randomState();
+      const cookieAttrs = `Path=/; HttpOnly; SameSite=Lax; Max-Age=600${isSecure(req) ? '; Secure' : ''}`;
+      const cookie = `asteria_oauth_state=${state}; ${cookieAttrs}; asteria_oauth_nonce=${nonce}; ${cookieAttrs}`;
       res.writeHead(302, {
-        location: auth.slackAuthorizeUrl(req, state),
+        location: auth.slackAuthorizeUrl(req, state, nonce),
         'set-cookie': cookie,
         'cache-control': 'no-store',
       });
@@ -143,13 +146,15 @@ export function createDashboardServer({ store, client, botChannels, logger = con
 
     if (route === '/auth/slack/callback') {
       const state = url.searchParams.get('state') || '';
-      const expected = parseCookies(req.headers.cookie || '').asteria_oauth_state;
+      const cookies = parseCookies(req.headers.cookie || '');
+      const expected = cookies.asteria_oauth_state;
+      const expectedNonce = cookies.asteria_oauth_nonce || '';
       if (!expected || state !== expected) {
         sendHtml(res, 400, renderDashboardHtml({ signedIn: false, baseUrl: auth.publicUrl(req) }));
         return;
       }
       try {
-        const slackUser = await auth.exchangeSlackCode(req, url.searchParams.get('code') || '');
+        const slackUser = await auth.exchangeSlackCode(req, url.searchParams.get('code') || '', expectedNonce);
         const permissions = resolvePermissions({ store, slackUserId: slackUser.id });
         const token = auth.completeLogin({
           slackUserId: slackUser.id,
@@ -158,7 +163,11 @@ export function createDashboardServer({ store, client, botChannels, logger = con
         });
         res.writeHead(302, {
           location: '/',
-          'set-cookie': `${sessionCookie(token, req)}; ` + 'asteria_oauth_state=; Path=/; Max-Age=0',
+          'set-cookie': [
+            `${sessionCookie(token, req)}`,
+            'asteria_oauth_state=; Path=/; Max-Age=0',
+            'asteria_oauth_nonce=; Path=/; Max-Age=0',
+          ].join('; '),
           'cache-control': 'no-store',
         });
         res.end();
