@@ -1,4 +1,5 @@
 import crypto from 'node:crypto';
+import { ensureDirectMessageChannel } from '../services/slack.js';
 
 const CODE_TTL_MS = 10 * 60 * 1000;
 const CODE_LENGTH = 6;
@@ -88,14 +89,15 @@ export function createDashboardAuth({ client, store, logger = console, slackClie
     }
     const code = String(crypto.randomInt(0, 10 ** CODE_LENGTH)).padStart(CODE_LENGTH, '0');
     codes.set(slackUserId, { code, createdAt: Date.now() });
-    let opener;
+    let channelId;
     try {
-      opener = await client.conversations.open({ user: slackUserId });
+      // conversations.open wants `users`, not `user`. Passing `user` came back
+      // channel_not_found for everybody, which is why sign-in could never deliver
+      // a code even with im:write granted.
+      channelId = await ensureDirectMessageChannel(client, slackUserId);
     } catch (error) {
       codes.delete(slackUserId);
-      // Slack refuses to start a DM the bot has no permission to start, which
-      // is what happens without the im:write scope. An existing DM still opens
-      // fine, so the fix is on the visitor's side and we can say so.
+      // Slack refuses to start a DM the bot has no permission to start.
       if (
         /^(channel_not_found|missing_scope|not_in_channel|user_not_visible|account_inactive)$/.test(
           error?.data?.error || '',
@@ -109,7 +111,7 @@ export function createDashboardAuth({ client, store, logger = console, slackClie
     }
     try {
       await client.chat.postMessage({
-        channel: opener.channel.id,
+        channel: channelId,
         text: `Your Asteria dashboard sign-in code is *${code}*. It expires in 10 minutes. If this wasn't you, ignore this message.`,
       });
     } catch (error) {
@@ -121,7 +123,7 @@ export function createDashboardAuth({ client, store, logger = console, slackClie
       }
       throw error;
     }
-    return { slackUserId, channelId: opener.channel.id };
+    return { slackUserId, channelId };
   }
 
   function verifyDmCode(slackUserId, code) {

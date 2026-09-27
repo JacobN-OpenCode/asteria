@@ -77,6 +77,7 @@ export function createScheduler({ store, aiService, client, logger, environment 
         client,
         settings.personal_channel_owner_id,
         "You have not sent your Daily Update yet today. Open Asteria's App Home to write and send it.",
+        { kind: 'reminder', ownerUserId: settings.personal_channel_owner_id, logger },
       );
       store.completeScheduledJob(jobKey, localDate, { sent: true });
     } catch (error) {

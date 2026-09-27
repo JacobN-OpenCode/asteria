@@ -1129,6 +1129,7 @@ export function createHomeHandlers({
           client,
           ownerId,
           `<@${userId}> opted out of the Daily Update group (<!subteam^${groupId}>).`,
+          { kind: 'reminder', ownerUserId: ownerId, logger },
         );
       } catch (dmError) {
         logger.error('Failed to notify owner of Daily Update opt-out', dmError);

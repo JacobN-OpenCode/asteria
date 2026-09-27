@@ -1,6 +1,6 @@
 import assert from 'node:assert';
 import { describe, it, mock } from 'node:test';
-import { sendDailyUpdate, sendWelcomeMessage } from '../src/services/slack.js';
+import { sendDailyUpdate, sendDirectMessage, sendWelcomeMessage } from '../src/services/slack.js';
 
 describe('Daily Update owner masking', () => {
   it('posts the Daily Update under the owner display name and avatar via chat:write.customize', async () => {
@@ -270,5 +270,74 @@ describe('Daily Update owner masking', () => {
     const callArgs = client.chat.postMessage.mock.calls[0].arguments[0];
     assert(callArgs.text.includes('Welcome *<@U123>* to the club!'));
     assert.equal(response.ts, '777.888');
+  });
+});
+
+describe('DM policy', () => {
+  function createClient() {
+    return {
+      conversations: {
+        open: mock.fn(async ({ users }) => ({ channel: { id: `D-for-${users}` } })),
+      },
+      chat: {
+        postMessage: mock.fn(async () => ({ ts: '999.000' })),
+      },
+    };
+  }
+
+  it('never DMs anybody for an unprompted nudge', async () => {
+    const client = createClient();
+    const logger = { warn: mock.fn(), error: mock.fn() };
+
+    const result = await sendDirectMessage(client, 'USOMEONE', 'hey', {
+      kind: 'reminder',
+      ownerUserId: 'UOWNER',
+      logger,
+    });
+
+    assert.equal(result.ok, false);
+    assert.equal(result.skipped, 'not-owner');
+    assert.equal(client.conversations.open.mock.callCount(), 0);
+    assert.equal(client.chat.postMessage.mock.callCount(), 0);
+    assert.equal(logger.warn.mock.callCount(), 1);
+  });
+
+  it('still reminds the owner', async () => {
+    const client = createClient();
+
+    const result = await sendDirectMessage(client, 'UOWNER', 'daily update time', {
+      kind: 'reminder',
+      ownerUserId: 'UOWNER',
+    });
+
+    assert.equal(result.ok, true);
+    assert.equal(result.channel, 'D-for-UOWNER');
+    assert.deepEqual(client.chat.postMessage.mock.calls[0].arguments[0], {
+      channel: 'D-for-UOWNER',
+      text: 'daily update time',
+    });
+  });
+
+  it('answers a conversation the person started', async () => {
+    const client = createClient();
+
+    const result = await sendDirectMessage(client, 'USOMEONE', 'your code is 123456', {
+      kind: 'reply',
+      ownerUserId: 'UOWNER',
+    });
+
+    assert.equal(result.ok, true);
+    assert.deepEqual(client.conversations.open.mock.calls[0].arguments[0], { users: 'USOMEONE' });
+    assert.equal(client.chat.postMessage.mock.callCount(), 1);
+  });
+
+  it('refuses to send without a recipient', async () => {
+    const client = createClient();
+
+    const result = await sendDirectMessage(client, '', 'nobody', { kind: 'reply' });
+
+    assert.equal(result.ok, false);
+    assert.equal(result.skipped, 'no-recipient');
+    assert.equal(client.chat.postMessage.mock.callCount(), 0);
   });
 });
