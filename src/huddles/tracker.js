@@ -35,6 +35,8 @@ function nowEpochSeconds() {
   return Math.floor(Date.now() / 1000);
 }
 
+const SILENT_NOTICE_COOLDOWN_SECONDS = 60 * 60;
+
 const DEFAULT_CHANNEL_RULES = {
   configured: false,
   enabled: true,
@@ -177,7 +179,10 @@ export function createHuddleTracker({ app, store, client, logger, ownerId = '', 
       enabled,
       paused,
       pausedUntil,
-      autoReplies: enabled && !paused && !!row.auto_replies,
+      // Deliberately independent of `enabled`: turning huddle tracking off stops the
+      // announcements, reviews and points, not the bot answering someone who pinged it.
+      // A pause is the switch that silences everything.
+      autoReplies: !paused && !!row.auto_replies,
       restrictTriggers: !!row.restrict_triggers,
       ownerIds: normalizeOwnerIds(parseJsonArray(row.owner_ids)),
       tracking: enabled && !paused,
@@ -273,10 +278,16 @@ export function createHuddleTracker({ app, store, client, logger, ownerId = '', 
     if (!huddle?.started_at || !huddle?.ended_at) {
       return;
     }
-    // Huddles we happen to observe in channels the bot was never in must not reach
-    // the leaderboard. Channel-less huddles are DMs with the bot, so they always count.
-    if (huddle.channel_id && botChannels) {
-      const channelIds = await botChannels.list();
+    // The bot sees huddle presence events workspace-wide, so most of the huddles it
+    // records happen in channels it was never in. A huddle only counts when we can
+    // prove the bot was inside it — a channel or DM the bot is a member of. Huddles
+    // with no channel at all are unprovable, so they are dropped.
+    if (botChannels) {
+      const channelIds = await botChannels.list({ includeDms: true });
+      if (!huddle.channel_id) {
+        logger.debug?.(`Skipping points for huddle ${huddle.call_id}: no channel to verify`);
+        return;
+      }
       if (!channelIds.includes(huddle.channel_id)) {
         if (channelIds.length === 0) {
           logger.error(`Could not verify which channels the bot is in; skipping points for huddle ${huddle.call_id}`);
@@ -465,6 +476,50 @@ export function createHuddleTracker({ app, store, client, logger, ownerId = '', 
     await backfillChannelHuddles(event.channel, eventClient);
   }
 
+  const silentNoticeAt = new Map();
+
+  /**
+   * Someone pinged a channel where replies are off. Answering in-channel would be
+   * noise, but silence just looks broken, so the person who pinged gets one quiet DM
+   * explaining who can turn it back on — at most once an hour each.
+   */
+  async function explainWhySilent({ channelId, userId, replyClient }) {
+    if (!userId || !replyClient?.chat?.postMessage) {
+      return;
+    }
+    const key = `${userId}:${channelId}`;
+    if (nowEpochSeconds() - (silentNoticeAt.get(key) || 0) < SILENT_NOTICE_COOLDOWN_SECONDS) {
+      return;
+    }
+    silentNoticeAt.set(key, nowEpochSeconds());
+    store.recordTriggerLog({
+      userId,
+      action: 'silly_request_silent',
+      detail: 'replies are off in this channel',
+      channelId,
+    });
+    try {
+      const opener = await replyClient.conversations?.open?.({ user: userId });
+      await replyClient.chat.postMessage({
+        channel: opener?.channel?.id,
+        text: `I can't reply in <#${channelId}> right now — huddle replies are turned off there. ${await channelManagerHint(channelId, userId)}`,
+      });
+    } catch (error) {
+      logger.error('Failed to explain why the bot is silent', error);
+    }
+  }
+
+  async function channelManagerHint(channelId, userId) {
+    if (ownerId && userId === ownerId) {
+      return 'You can turn them back on from the app home.';
+    }
+    const owners = channelRules(channelId).ownerIds;
+    if (owners.length > 0) {
+      return `${owners.map((id) => `<@${id}>`).join(' ')} can turn them back on from the app home.`;
+    }
+    return 'The channel owners or the app owner can turn them back on from the app home.';
+  }
+
   async function handleHuddleMention({ message, channel, client: eventClient }) {
     const threadTs = message?.thread_ts ?? '';
     const botUserId = await getBotUserId();
@@ -478,6 +533,7 @@ export function createHuddleTracker({ app, store, client, logger, ownerId = '', 
     const channelId = message.channel ?? channel ?? huddleChannelForThread(threadTs);
     const rules = channelRules(channelId);
     if (!rules.autoReplies) {
+      await explainWhySilent({ channelId, userId: message?.user || '', replyClient });
       return;
     }
     if (!mayTriggerInChannel(rules, message?.user || '')) {
