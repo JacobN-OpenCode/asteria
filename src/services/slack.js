@@ -84,9 +84,41 @@ export async function ensureDirectMessageChannel(client, userId) {
   return response.channel.id;
 }
 
-export async function sendDirectMessage(client, userId, text) {
-  const channelId = await ensureDirectMessageChannel(client, userId);
-  return client.chat.postMessage({ channel: channelId, text });
+/**
+ * The only sanctioned way for this bot to DM a person. Members complained about
+ * unsolicited DMs, so the policy is enforced here rather than at each call site:
+ *
+ * - `reminder`: the bot is nudging somebody who did not ask. Owner only, and the
+ *   owner is the configured personal-channel owner, so reminders can only ever
+ *   reach Jacob.
+ * - `reply`: the person already started the conversation or clicked the button
+ *   that asked for this (sign-in code, "why are you quiet?", "yes, review my
+ *   huddle"). Never used for anything the bot decides on its own.
+ *
+ * Anything that would DM somebody unprompted must not call this at all.
+ */
+export async function sendDirectMessage(
+  client,
+  userId,
+  text,
+  { kind = 'reply', ownerUserId = null, logger = null } = {},
+) {
+  if (!userId) {
+    logger?.warn?.('Refusing to send a DM without a recipient');
+    return { ok: false, skipped: 'no-recipient' };
+  }
+  if (kind === 'reminder' && ownerUserId && userId !== ownerUserId) {
+    logger?.warn?.(`Refusing to DM ${userId}: reminders are owner-only`);
+    return { ok: false, skipped: 'not-owner' };
+  }
+  try {
+    const channelId = await ensureDirectMessageChannel(client, userId);
+    const response = await client.chat.postMessage({ channel: channelId, text });
+    return { ok: true, channel: channelId, ts: response?.ts, kind };
+  } catch (error) {
+    logger?.error?.(`Failed to DM ${userId} (${kind})`, error);
+    throw error;
+  }
 }
 
 export async function addUserToUserGroup(client, userGroupId, userId) {

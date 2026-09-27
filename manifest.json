@@ -4,13 +4,15 @@
     "minor_version": 1
   },
   "display_information": {
-    "name": "Asteria"
+    "name": "J-Log Manager",
+    "description": "Clone of ASTERIA",
+    "background_color": "#158551"
   },
   "features": {
     "app_home": {
       "home_tab_enabled": true,
-      "messages_tab_enabled": false,
-      "messages_tab_read_only_enabled": true
+      "messages_tab_enabled": true,
+      "messages_tab_read_only_enabled": false
     },
     "bot_user": {
       "display_name": "Asteria",
@@ -20,6 +22,7 @@
   "oauth_config": {
     "scopes": {
       "bot": [
+        "mpim:write",
         "channels:history",
         "channels:read",
         "chat:write",
@@ -36,7 +39,12 @@
         "users.profile:read",
         "users:read"
       ]
-    }
+    },
+    "redirect_urls": [
+      "https://asteria.navaratne.uk/auth/slack/callback",
+      "https://asteria.mini-jacob.hackclub.app/auth/slack/callback"
+    ],
+    "pkce_enabled": false
   },
   "settings": {
     "event_subscriptions": {
@@ -53,8 +61,10 @@
     "interactivity": {
       "is_enabled": true
     },
-    "org_deploy_enabled": true,
+    "org_deploy_enabled": false,
     "socket_mode_enabled": true,
-    "token_rotation_enabled": false
+    "token_rotation_enabled": false,
+    "app_level_token_rotation_enabled": false,
+    "is_mcp_enabled": false
   }
 }

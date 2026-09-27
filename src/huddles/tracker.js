@@ -1,3 +1,4 @@
+import { sendDirectMessage } from '../services/slack.js';
 import { computeHuddlePoints } from './points.js';
 import {
   computeHuddleStats,
@@ -237,7 +238,7 @@ export function createHuddleTracker({ app, store, client, logger, ownerId = '', 
       });
       return true;
     } catch (error) {
-      logger.warn?.(`Could not post huddle review prompt to thread for ${huddle.call_id}, falling back to DM`, error);
+      logger.warn?.(`Could not post huddle review prompt to thread for ${huddle.call_id}`, error);
       return false;
     }
   }
@@ -264,14 +265,15 @@ export function createHuddleTracker({ app, store, client, logger, ownerId = '', 
     if (await postReviewPromptToThread(huddle, duration)) {
       return;
     }
-    try {
-      await client.chat.postMessage({
-        channel: recipient,
-        ...buildReviewPrompt(huddle.call_id, duration),
-      });
-    } catch (error) {
-      logger.error(`Failed to DM huddle review prompt for ${callId}`, error);
-    }
+    // No channel thread to ask in, and we do not DM people unprompted. This used
+    // to fall back to a DM to whoever joined the huddle first, which reached 98
+    // people unasked, so the prompt is simply skipped and recorded instead.
+    store.recordTriggerLog({
+      userId: recipient,
+      action: 'huddle_review_prompt_skipped',
+      detail: huddle.call_id,
+      channelId: huddle.channel_id || '',
+    });
   }
 
   async function awardHuddlePoints(huddle) {
@@ -481,7 +483,8 @@ export function createHuddleTracker({ app, store, client, logger, ownerId = '', 
   /**
    * Someone pinged a channel where replies are off. Answering in-channel would be
    * noise, but silence just looks broken, so the person who pinged gets one quiet DM
-   * explaining who can turn it back on — at most once an hour each.
+   * explaining who can turn it back on — at most once an hour each. This is a reply
+   * to something they asked, not an unprompted nudge, so it goes out as a `reply`.
    */
   async function explainWhySilent({ channelId, userId, replyClient }) {
     if (!userId || !replyClient?.chat?.postMessage) {
@@ -499,11 +502,12 @@ export function createHuddleTracker({ app, store, client, logger, ownerId = '', 
       channelId,
     });
     try {
-      const opener = await replyClient.conversations?.open?.({ user: userId });
-      await replyClient.chat.postMessage({
-        channel: opener?.channel?.id,
-        text: `I can't reply in <#${channelId}> right now — huddle replies are turned off there. ${await channelManagerHint(channelId, userId)}`,
-      });
+      await sendDirectMessage(
+        replyClient,
+        userId,
+        `I can't reply in <#${channelId}> right now — huddle replies are turned off there. ${await channelManagerHint(channelId, userId)}`,
+        { kind: 'reply', ownerUserId: ownerId, logger },
+      );
     } catch (error) {
       logger.error('Failed to explain why the bot is silent', error);
     }
@@ -767,6 +771,25 @@ export function createHuddleTracker({ app, store, client, logger, ownerId = '', 
     }
   }
 
+  /**
+   * Button presses happen in a channel or DM, so answer with an ephemeral in
+   * whichever conversation the press came from. Ephemeral is visible to exactly
+   * one person and notifies nobody, which is what a refusal should look like.
+   */
+  async function answerActionPrivately(actionClient, body, text) {
+    const userId = body?.user?.id;
+    const channel = body?.container?.channel_id || body?.channel?.id;
+    if (!userId || !channel) {
+      logger.warn?.('Could not answer a button press privately: no user or channel context');
+      return;
+    }
+    try {
+      await actionClient.chat.postEphemeral({ channel, user: userId, text });
+    } catch (error) {
+      logger.error('Failed to answer a button press privately', error);
+    }
+  }
+
   async function handleGenerateReview({ ack, body, client: actionClient }) {
     if (ack) {
       await ack();
@@ -777,10 +800,7 @@ export function createHuddleTracker({ app, store, client, logger, ownerId = '', 
     }
     const huddle = store.getHuddle(callId);
     if (!huddle) {
-      await actionClient.chat.postMessage({
-        channel: body?.user?.id,
-        text: 'Sorry, I could not find that huddle anymore.',
-      });
+      await answerActionPrivately(actionClient, body, 'Sorry, I could not find that huddle anymore.');
       return;
     }
     const rules = channelRules(huddle.channel_id || body?.container?.channel_id || '');
@@ -791,10 +811,11 @@ export function createHuddleTracker({ app, store, client, logger, ownerId = '', 
         detail: 'not a channel owner',
         channelId: huddle.channel_id || body?.container?.channel_id || '',
       });
-      await actionClient.chat.postMessage({
-        channel: body?.user?.id,
-        text: 'only the channel owners I was given can ask me for a review in that channel',
-      });
+      await answerActionPrivately(
+        actionClient,
+        body,
+        'only the channel owners I was given can ask me for a review in that channel',
+      );
       return;
     }
     await generateReview({ huddle, recipientUserId: body?.user?.id, actionClient });
@@ -868,9 +889,18 @@ export function createHuddleTracker({ app, store, client, logger, ownerId = '', 
     if (!recipientUserId) {
       return;
     }
-    await actionClient.chat.postMessage({
-      channel: recipientUserId,
-      text,
+    // They asked for this review by pressing the button, so answering them is a
+    // reply rather than an unprompted DM.
+    store.recordTriggerLog({
+      userId: recipientUserId,
+      action: 'huddle_review_delivered_dm',
+      detail: huddle.call_id,
+      channelId: huddle.channel_id || '',
+    });
+    await sendDirectMessage(actionClient, recipientUserId, text, {
+      kind: 'reply',
+      ownerUserId: ownerId,
+      logger,
     });
   }
 

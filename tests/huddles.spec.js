@@ -436,7 +436,36 @@ describe('huddle tracker integration', () => {
     tracker.stop();
   });
 
-  it('prompts the first joiner when the starter is unknown and no owner is in', async () => {
+  it('answers a stale review button ephemerally instead of DMing', async () => {
+    const store = await createTestStore();
+    const client = createBasicClient();
+    client.chat.postEphemeral = mock.fn(async () => ({ ts: '1.1' }));
+    const { handlers, tracker } = createTrackerHarness({ store, client, ownerId: 'UOWNER' });
+
+    await handlers['action:generate_huddle_review']({
+      ack: mock.fn(),
+      body: {
+        user: { id: 'U9' },
+        container: { channel_id: 'Cpress' },
+        actions: [{ value: 'Rmissing' }],
+      },
+      client,
+    });
+    await flush();
+
+    assert.equal(client.chat.postMessage.mock.callCount(), 0);
+    assert.equal(client.conversations.open.mock.callCount(), 0);
+    assert.equal(client.chat.postEphemeral.mock.callCount(), 1);
+    assert.deepEqual(client.chat.postEphemeral.mock.calls[0].arguments[0], {
+      channel: 'Cpress',
+      user: 'U9',
+      text: 'Sorry, I could not find that huddle anymore.',
+    });
+
+    tracker.stop();
+  });
+
+  it('never DMs anybody when there is no thread to ask in', async () => {
     const store = await createTestStore();
     const client = createBasicClient();
     const { handlers, tracker } = createTrackerHarness({ store, client, ownerId: 'UOWNER' });
@@ -467,13 +496,53 @@ describe('huddle tracker integration', () => {
     });
     await flush();
 
-    assert.equal(client.chat.postMessage.mock.callCount(), 1);
-    assert.equal(client.chat.postMessage.mock.calls[0].arguments[0].channel, 'U5');
+    assert.equal(client.chat.postMessage.mock.callCount(), 0);
+    assert.equal(client.conversations.open.mock.callCount(), 0);
+    const skipped = store.listTriggerLog(50).filter((row) => row.action === 'huddle_review_prompt_skipped');
+    assert.equal(skipped.length, 1);
+    assert.equal(skipped[0].user_id, 'U5');
 
     tracker.stop();
   });
 
-  it('falls back to DMing the starter when the thread prompt cannot be posted', async () => {
+  it('records the skipped prompt when the thread prompt cannot be posted', async () => {
+    const store = await createTestStore();
+    const client = createBasicClient();
+    const { handlers, tracker } = createTrackerHarness({ store, client, ownerId: 'UOWNER' });
+
+    await handlers['event:user_huddle_changed']({
+      event: {
+        user: {
+          id: 'U5',
+          profile: { huddle_state: 'in_a_huddle', huddle_state_call_id: 'R2' },
+        },
+      },
+    });
+    handlers.message({
+      message: {
+        subtype: 'huddle_thread',
+        ts: '172800.000000',
+        room: {
+          id: 'R2',
+          call_family: 'huddle',
+          created_by: '',
+          date_start: 172000,
+          date_end: 172800,
+          thread_root_ts: '',
+          channels: [],
+          participant_history: ['U5'],
+        },
+      },
+    });
+    await flush();
+
+    assert.equal(client.chat.postMessage.mock.callCount(), 0);
+    assert.equal(client.chat.postMessage.mock.calls.length, 0);
+
+    tracker.stop();
+  });
+
+  it('records the skipped prompt when the thread prompt cannot be posted', async () => {
     const store = await createTestStore();
     const client = createBasicClient();
     let postCount = 0;
@@ -538,13 +607,15 @@ describe('huddle tracker integration', () => {
     });
     await flush();
 
-    assert.equal(client.chat.postMessage.mock.callCount(), 2);
+    assert.equal(client.chat.postMessage.mock.callCount(), 1);
     const threadAttempt = client.chat.postMessage.mock.calls[0].arguments[0];
     assert.equal(threadAttempt.channel, 'Cthr');
     assert.equal(threadAttempt.thread_ts, '173000.000000');
-    const dmFallback = client.chat.postMessage.mock.calls[1].arguments[0];
-    assert.equal(dmFallback.channel, 'UOWNER');
-    assert.equal(dmFallback.blocks.find((block) => block.type === 'actions').elements[0].value, 'R3');
+    // The thread post failed, and the owner must not be DMed about it.
+    assert.equal(client.conversations.open.mock.callCount(), 0);
+    const skipped = store.listTriggerLog(50).filter((row) => row.action === 'huddle_review_prompt_skipped');
+    assert.equal(skipped.length, 1);
+    assert.equal(skipped[0].user_id, 'UOWNER');
 
     tracker.stop();
   });
@@ -1591,9 +1662,7 @@ describe('huddle channel configuration', () => {
       'and no silly request is logged, because no silly reply was sent',
     );
     assert(
-      store
-        .listTriggerLog(50, ['Crandom'])
-        .some((entry) => entry.action === 'silly_request_silent'),
+      store.listTriggerLog(50, ['Crandom']).some((entry) => entry.action === 'silly_request_silent'),
       'the silence is logged so it is not a mystery',
     );
   });
