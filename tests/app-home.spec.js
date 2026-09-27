@@ -4,6 +4,17 @@ import os from 'node:os';
 import path from 'node:path';
 import { afterEach, describe, it, mock } from 'node:test';
 import { createHomeHandlers } from '../src/app-home/handlers.js';
+import {
+  buildDailyUpdateModal,
+  buildHuddleChannelModal,
+  buildPersonalChannelModal,
+  buildPingGroupModal,
+  buildQuestionPreviewModal,
+  buildQuestionTestErrorModal,
+  buildQuestionTestModal,
+  buildThreadMessageModal,
+  buildWelcomeMessageModal,
+} from '../src/app-home/modals.js';
 import { createStore } from '../src/database/store.js';
 
 let createdPaths = [];
@@ -31,6 +42,7 @@ function createHandlerTestHarness({ store, aiService, botChannelIds = ['Crandom'
       handlers[`event:${eventName}`] = handler;
     },
     error: mock.fn(),
+    logger: { info: mock.fn(), warn: mock.fn(), error: mock.fn() },
   };
   const botChannels = { list: mock.fn(async () => botChannelIds) };
   const { publishTab, handleHuddleChannelAction } = createHomeHandlers({
@@ -1285,6 +1297,70 @@ describe('App Home categories and huddle channel controls', () => {
     store.close();
   });
 
+  it('tells the user when Slack refuses to open the settings dialog', async () => {
+    const { store, handlers, client } = await createHarness();
+    store.upsertHuddleChannel({ channelId: 'Cmine', ownerIds: ['UOWNER'] });
+    client.views.open = mock.fn(async () => {
+      const error = new Error('An API error occurred: invalid_arguments');
+      error.data = { error: 'invalid_arguments' };
+      throw error;
+    });
+
+    await handlers.handleHuddleChannelAction('configure', {
+      ack: mock.fn(),
+      body: { user: { id: 'UOWNER' }, actions: [{ value: 'Cmine' }], trigger_id: 'T1' },
+      client,
+    });
+
+    const view = client.views.publish.mock.calls.at(-1).arguments[0].view;
+    assert(
+      JSON.stringify(view).includes("Couldn't open the settings dialog"),
+      'says so in the app home instead of appearing to do nothing',
+    );
+    store.close();
+  });
+
+  it('never builds a select option that Slack would reject', () => {
+    const settings = { timezone: 'UTC', daily_question_send_time: '09:00' };
+    const modals = {
+      huddleChannel: buildHuddleChannelModal({
+        channel: {
+          channelId: 'C1',
+          name: 'x',
+          ownerIds: ['U1'],
+          enabled: true,
+          autoReplies: true,
+          restrictTriggers: false,
+          pausedUntil: 0,
+        },
+      }),
+      dailyUpdate: buildDailyUpdateModal({ draft: '' }),
+      threadMessage: buildThreadMessageModal({ settings }),
+      welcomeMessage: buildWelcomeMessageModal({ settings }),
+      pingGroup: buildPingGroupModal({}),
+      personalChannel: buildPersonalChannelModal({ settings }),
+      questionTest: buildQuestionTestModal(),
+      questionPreview: buildQuestionPreviewModal({ questionText: 'q' }),
+      questionTestError: buildQuestionTestErrorModal({ text: 'e' }),
+    };
+
+    for (const [name, view] of Object.entries(modals)) {
+      for (const block of view.blocks || []) {
+        const element = block.element;
+        if (!element) {
+          continue;
+        }
+        const preselected = [element.initial_option, ...(element.initial_options || [])].filter(Boolean);
+        for (const option of preselected) {
+          assert(option.text?.text, `${name}/${block.block_id}: ${element.type} initial option has text`);
+        }
+        for (const option of element.options || []) {
+          assert(option.text?.text, `${name}/${block.block_id}: ${element.type} option has text`);
+        }
+      }
+    }
+  });
+
   it('opens the config modal with the current settings for a permitted user only', async () => {
     const { store, handlers, client } = await createHarness();
     store.upsertHuddleChannel({ channelId: 'Cmine', ownerIds: ['UOTHER'], autoReplies: false });
@@ -1300,6 +1376,23 @@ describe('App Home categories and huddle channel controls', () => {
     const modalText = JSON.stringify(modal);
     assert(modalText.includes('UOTHER'), 'prefilled with the current owners');
     assert(modalText.includes('owners'), 'can restrict triggers to owners');
+
+    // Slack rejects the whole modal with invalid_arguments ("missing required field: text
+    // [json-pointer:/view/blocks/N/element/initial_option]") and nothing opens, so every
+    // pre-selected option has to be a real option object.
+    const selects = modal.blocks.filter((block) => block.element?.type === 'static_select');
+    assert.equal(selects.length, 4, 'the modal has four selects');
+    for (const select of selects) {
+      const { initial_option: initial, options } = select.element;
+      assert(initial, `${select.block_id} has an initial option`);
+      assert.deepEqual(
+        initial,
+        options.find((option) => option.value === initial.value),
+        `${select.block_id} initial_option matches a real option, text included`,
+      );
+      assert.equal(initial.text.type, 'plain_text');
+      assert(initial.text.text, `${select.block_id} initial_option has text`);
+    }
 
     const modalsBefore = client.views.open.mock.callCount();
     await handlers.handleHuddleChannelAction('configure', {

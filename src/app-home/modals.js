@@ -42,7 +42,15 @@ function buildPlainTextInput({ blockId, actionId, label, initialValue, placehold
   };
 }
 
+function toSelectOption(option) {
+  return {
+    text: { type: 'plain_text', text: option.label },
+    value: option.value,
+  };
+}
+
 function buildStaticSelect({ blockId, actionId, label, options }) {
+  const initial = options.find((option) => option.initial) || options[0];
   return {
     type: 'input',
     block_id: blockId,
@@ -53,11 +61,11 @@ function buildStaticSelect({ blockId, actionId, label, options }) {
     element: {
       type: 'static_select',
       action_id: actionId,
-      initial_option: options.find((option) => option.initial) || options[0],
-      options: options.map((option) => ({
-        text: { type: 'plain_text', text: option.label },
-        value: option.value,
-      })),
+      // Slack requires initial_option to carry `text`; without it views.open fails with
+      // invalid_arguments and the modal never appears, so it has to be the same shape
+      // as a real option object rather than our internal { value, label } option.
+      initial_option: initial ? toSelectOption(initial) : undefined,
+      options: options.map(toSelectOption),
     },
   };
 }
