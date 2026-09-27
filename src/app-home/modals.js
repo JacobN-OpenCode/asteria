@@ -119,7 +119,7 @@ export function buildHuddleChannelModal({ channel, nowSeconds = Math.floor(Date.
         label: 'Track huddles in this channel',
         options: [
           { value: 'on', label: 'On — track, announce and review huddles', initial: !!channel.enabled },
-          { value: 'off', label: 'Off — stay completely silent', initial: !channel.enabled },
+          { value: 'off', label: 'Off — no announcements, reviews or points', initial: !channel.enabled },
         ],
       }),
       buildStaticSelect({
@@ -127,7 +127,7 @@ export function buildHuddleChannelModal({ channel, nowSeconds = Math.floor(Date.
         actionId: 'huddle_channel_replies_value',
         label: 'Reply when mentioned',
         options: [
-          { value: 'on', label: 'On — answer mentions with the silly replies', initial: !!channel.autoReplies },
+          { value: 'on', label: 'On — answer mentions, even with tracking off', initial: !!channel.autoReplies },
           { value: 'off', label: 'Off — never reply to mentions', initial: !channel.autoReplies },
         ],
       }),

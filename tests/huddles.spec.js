@@ -32,7 +32,7 @@ async function createTestStore() {
   return createStore(databasePath);
 }
 
-function createTrackerHarness({ store, client, ownerId, botChannelIds }) {
+function createTrackerHarness({ store, client, ownerId, botChannelIds, botChannels }) {
   const handlers = {};
   const app = {
     event: (eventName, handler) => {
@@ -52,7 +52,7 @@ function createTrackerHarness({ store, client, ownerId, botChannelIds }) {
     client,
     logger: { error: mock.fn(), info: mock.fn() },
     ownerId,
-    botChannels: botChannelIds ? { list: mock.fn(async () => botChannelIds) } : undefined,
+    botChannels: botChannels ?? (botChannelIds ? { list: mock.fn(async () => botChannelIds) } : undefined),
   });
   return { handlers, tracker };
 }
@@ -70,6 +70,7 @@ function createBasicClient() {
       update: mock.fn(async () => ({ ts: '111.222' })),
     },
     conversations: {
+      open: mock.fn(async () => ({ channel: { id: 'Dquiet' } })),
       history: mock.fn(async () => ({ messages: [] })),
       replies: mock.fn(async () => ({ messages: [] })),
     },
@@ -1219,6 +1220,187 @@ describe('huddle tracker integration', () => {
     tracker.stop();
   });
 
+  it('counts a huddle held in a DM the bot is in', async () => {
+    const store = await createTestStore();
+    const botChannels = {
+      list: mock.fn(async ({ includeDms } = {}) => (includeDms ? ['Cbot', 'Ddm'] : ['Cbot'])),
+    };
+    const { handlers, tracker } = createTrackerHarness({
+      store,
+      client: createBasicClient(),
+      ownerId: 'UOWNER',
+      botChannels,
+    });
+
+    await handlers['event:user_huddle_changed']({
+      event: { user: { id: 'UOWNER', profile: { huddle_state: 'in_a_huddle', huddle_state_call_id: 'Rdm' } } },
+    });
+    await handlers['event:user_huddle_changed']({
+      event: { user: { id: 'U9', profile: { huddle_state: 'in_a_huddle', huddle_state_call_id: 'Rdm' } } },
+    });
+    handlers.message({
+      message: {
+        subtype: 'huddle_thread',
+        channel: 'Ddm',
+        ts: '180000.000000',
+        room: {
+          id: 'Rdm',
+          call_family: 'huddle',
+          created_by: 'UOWNER',
+          date_start: 172000,
+          date_end: 180000,
+          thread_root_ts: '172000.000000',
+          channels: ['Ddm'],
+          participant_history: ['UOWNER', 'U9'],
+        },
+      },
+    });
+    await flush(40);
+
+    const scoped = store.listHuddleLeaderboard(50, ['Cbot', 'Ddm']);
+    assert(
+      scoped.some((row) => row.user_id === 'UOWNER'),
+      'a DM huddle the bot was inside still counts',
+    );
+    assert(store.listHuddleLeaderboard(50, ['Cbot']).length === 0, 'but it is not shown for channels the DM is not in');
+
+    tracker.stop();
+  });
+
+  it('never awards points for a huddle with no channel to verify', async () => {
+    const store = await createTestStore();
+    const { handlers, tracker } = createTrackerHarness({
+      store,
+      client: createBasicClient(),
+      ownerId: 'UOWNER',
+      botChannelIds: ['Cbot'],
+    });
+
+    // A huddle the bot hears about through presence events alone, then never sees a
+    // channel for: most of the huddles it records are in channels it was never in.
+    await handlers['event:user_huddle_changed']({
+      event: { user: { id: 'U9', profile: { huddle_state: 'in_a_huddle', huddle_state_call_id: 'Rghost' } } },
+    });
+    handlers.message({
+      message: {
+        subtype: 'huddle_thread',
+        channel: '',
+        ts: '180000.000000',
+        room: {
+          id: 'Rghost',
+          call_family: 'huddle',
+          created_by: 'U9',
+          date_start: 172000,
+          date_end: 180000,
+          thread_root_ts: '172000.000000',
+          channels: [],
+          participant_history: ['U9'],
+        },
+      },
+    });
+    await flush();
+
+    assert.equal(store.getHuddle('Rghost').status, 'ended', 'the huddle is still finalised for the logs');
+    assert.deepEqual(store.listHuddleLeaderboard(), [], 'but an unverifiable huddle never scores');
+    assert.deepEqual(
+      store.listHuddleLeaderboard(50, ['Cbot']),
+      [],
+      'and it is not attributed to a channel the bot happens to be in',
+    );
+
+    tracker.stop();
+  });
+
+  it('answers a mention even when huddle tracking is off in that channel', async () => {
+    const store = await createTestStore();
+    const client = createBasicClient();
+    const { handlers, tracker } = createTrackerHarness({ store, client, ownerId: 'UOWNER' });
+
+    store.upsertHuddleChannel({ channelId: 'Cquiet', name: 'quiet', enabled: false, autoReplies: true });
+    store.upsertHuddle({
+      callId: 'Rquiet',
+      channelId: 'Cquiet',
+      createdBy: 'UOWNER',
+      startedAt: 172000,
+      endedAt: null,
+      threadRootTs: '172000.000000',
+      participantHistory: ['UOWNER'],
+    });
+
+    handlers.message({
+      message: {
+        type: 'message',
+        channel: 'Cquiet',
+        user: 'UOWNER',
+        thread_ts: '172000.000000',
+        text: 'hey <@BOTUSER> watch this huddle for me?',
+      },
+    });
+    await flush();
+
+    assert.equal(client.chat.postMessage.mock.callCount(), 1, 'the ping gets an answer');
+    assert.equal(client.conversations.open.mock.callCount(), 0, 'in the channel, not by DM');
+
+    tracker.stop();
+  });
+
+  it('explains itself by DM when replies are off, then stays quiet for an hour', async () => {
+    const store = await createTestStore();
+    const client = createBasicClient();
+    const { handlers, tracker } = createTrackerHarness({ store, client, ownerId: 'UOWNER' });
+
+    store.upsertHuddleChannel({
+      channelId: 'Cmute',
+      name: 'muted',
+      enabled: true,
+      autoReplies: false,
+      ownerIds: ['UOWNER'],
+    });
+    store.upsertHuddle({
+      callId: 'Rmute',
+      channelId: 'Cmute',
+      createdBy: 'UOWNER',
+      startedAt: 172000,
+      endedAt: null,
+      threadRootTs: '172000.000000',
+      participantHistory: ['UOWNER'],
+    });
+
+    const ping = {
+      message: {
+        type: 'message',
+        channel: 'Cmute',
+        user: 'U9',
+        thread_ts: '172000.000000',
+        text: '<@BOTUSER> status?',
+      },
+    };
+    handlers.message(ping);
+    await flush();
+
+    assert.equal(
+      client.chat.postMessage.mock.calls.filter((call) => call.arguments[0].channel === 'Cmute').length,
+      0,
+      'nothing posted in the channel',
+    );
+    assert.equal(client.conversations.open.mock.callCount(), 1, 'the person who pinged is told why');
+    const dm = client.chat.postMessage.mock.calls[0].arguments[0];
+    assert.equal(dm.channel, 'Dquiet', 'sent as a DM');
+    assert(dm.text.includes('replies are turned off'));
+    assert(dm.text.includes('<@UOWNER>'), 'the channel owner is named as who can fix it');
+    assert(
+      store.listTriggerLog().some((entry) => entry.action === 'silly_request_silent'),
+      'and it shows up in the logs',
+    );
+
+    handlers.message(ping);
+    await flush();
+    assert.equal(client.chat.postMessage.mock.callCount(), 1, 'a second ping is not spammed');
+    assert.equal(client.conversations.open.mock.callCount(), 1, 'and no second DM is opened');
+
+    tracker.stop();
+  });
+
   it('filters the trigger log down to the given channels', async () => {
     const store = await createTestStore();
 
@@ -1399,13 +1581,20 @@ describe('huddle channel configuration', () => {
 
     assert.equal(
       client.chat.postMessage.mock.callCount(),
-      postsBefore,
-      'no silly reply, only the tracking announcement from before',
+      postsBefore + 1,
+      'no silly reply in the channel, only the one quiet DM explaining why',
     );
-    assert.equal(
-      store.listTriggerLog(50, ['Crandom']).filter((entry) => entry.action === 'silly_request').length,
-      0,
-      'and nothing is logged as a request, because nothing happened',
+    const explanation = client.chat.postMessage.mock.calls.at(-1).arguments[0];
+    assert.equal(explanation.channel, 'Dquiet', 'the explanation goes to the person as a DM');
+    assert(
+      store.listTriggerLog(50, ['Crandom']).filter((entry) => entry.action === 'silly_request').length === 0,
+      'and no silly request is logged, because no silly reply was sent',
+    );
+    assert(
+      store
+        .listTriggerLog(50, ['Crandom'])
+        .some((entry) => entry.action === 'silly_request_silent'),
+      'the silence is logged so it is not a mystery',
     );
   });
 

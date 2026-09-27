@@ -12,7 +12,12 @@ const MEMBERSHIP_PAGE_SIZE = 999;
  */
 export function createBotChannelDirectory({ client, logger }) {
   let botUserId = '';
-  let cache = { ids: [], fetchedAt: 0, ok: true };
+  // Channel and DM memberships are cached separately: the logs only want real
+  // channels, while point awards also need to recognise huddles held in a DM.
+  const caches = {
+    channels: { ids: [], fetchedAt: 0, ok: true },
+    withDms: { ids: [], fetchedAt: 0, ok: true },
+  };
 
   async function resolveBotUserId() {
     if (botUserId) {
@@ -34,7 +39,9 @@ export function createBotChannelDirectory({ client, logger }) {
    * falling back to every channel we have ever seen a huddle in — that fallback
    * is what put unrelated channels and people in the logs.
    */
-  async function list({ maxAgeMs = CACHE_MS } = {}) {
+  async function list({ maxAgeMs = CACHE_MS, includeDms = false } = {}) {
+    const key = includeDms ? 'withDms' : 'channels';
+    const cache = caches[key];
     const now = Date.now();
     if (now - cache.fetchedAt < maxAgeMs) {
       return cache.ok ? cache.ids : [];
@@ -47,7 +54,7 @@ export function createBotChannelDirectory({ client, logger }) {
       do {
         const page = await client.users.conversations({
           user,
-          types: 'public_channel,private_channel',
+          types: includeDms ? 'public_channel,private_channel,mpim,im' : 'public_channel,private_channel',
           exclude_archived: true,
           limit: MEMBERSHIP_PAGE_SIZE,
           ...(cursor ? { cursor } : {}),
@@ -59,11 +66,13 @@ export function createBotChannelDirectory({ client, logger }) {
         }
         cursor = page?.response_metadata?.next_cursor || '';
       } while (cursor);
-      cache = { ids, fetchedAt: now, ok: true };
-      logger?.info?.(`Bot is in ${ids.length} channel(s); membership lookup took ${Date.now() - startedAt}ms`);
+      caches[key] = { ids, fetchedAt: now, ok: true };
+      logger?.info?.(
+        `Bot is in ${ids.length} ${includeDms ? 'channel(s) or DMs' : 'channel(s)'}; membership lookup took ${Date.now() - startedAt}ms`,
+      );
       return ids;
     } catch (error) {
-      cache = { ids: [], fetchedAt: now, ok: false };
+      caches[key] = { ids: [], fetchedAt: now, ok: false };
       logger?.error?.('Failed to resolve the channels the bot is in', error);
       return [];
     }
@@ -72,7 +81,8 @@ export function createBotChannelDirectory({ client, logger }) {
   return {
     list,
     invalidate: () => {
-      cache = { ids: [], fetchedAt: 0, ok: true };
+      caches.channels = { ids: [], fetchedAt: 0, ok: true };
+      caches.withDms = { ids: [], fetchedAt: 0, ok: true };
     },
   };
 }
