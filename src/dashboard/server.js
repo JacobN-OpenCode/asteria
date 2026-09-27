@@ -188,12 +188,13 @@ export function createDashboardServer({ store, client, botChannels, logger = con
       try {
         await auth.startDmVerification(slackUserId);
       } catch (error) {
-        // A mistyped member id is the visitor's problem, not ours, and the
-        // message says what to fix, so it must not read like a server fault.
-        if (!/Slack member ID/.test(error.message)) {
+        // A mistyped member id, or a DM Slack will not let the bot start, is
+        // the visitor's to fix and the sentence says how, so it must not read
+        // like a server fault.
+        if (!error.status) {
           throw error;
         }
-        sendJson(res, 400, { error: error.message });
+        sendJson(res, error.status, { error: error.message });
         return;
       }
       sendJson(res, 200, { ok: true });
