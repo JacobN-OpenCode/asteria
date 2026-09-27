@@ -93,9 +93,10 @@ export function createHomeHandlers({
   permissions = createChannelPermissions({ store }),
 }) {
   const { isOwner, isChannelOwner, mayConfigureChannel } = permissions;
+  const logger = app.logger || console;
   const homeAssistantService = createHomeAssistantService({
     getSettings: () => store.getSettings(),
-    logger: app.logger,
+    logger,
   });
 
   /**
@@ -336,13 +337,26 @@ export function createHomeHandlers({
       return;
     }
     const state = currentChannelState(channelId);
-    await openModal(
-      client,
-      body.trigger_id,
-      buildHuddleChannelModal({
-        channel: { channelId, ...state },
-      }),
-    );
+    try {
+      await openModal(
+        client,
+        body.trigger_id,
+        buildHuddleChannelModal({
+          channel: { channelId, ...state },
+        }),
+      );
+    } catch (error) {
+      // Slack rejecting the modal used to look like the button doing nothing at all.
+      const reason = String(error?.data?.error || error?.message || error);
+      logger.error(`Failed to open the huddle channel modal for ${channelId}`, error);
+      await publishTab(
+        client,
+        body.user.id,
+        'huddles',
+        'huddle-channels',
+        `Couldn't open the settings dialog (${reason}).`,
+      );
+    }
   }
 
   async function handleHuddleChannelConfigSubmit({ ack, body, client, view }) {
