@@ -127,7 +127,7 @@ export function createDashboardServer({ store, client, botChannels, logger = con
 
     if (route === '/login') {
       if (!auth.oauthConfigured) {
-        redirect(res, '/#signin');
+        redirect(res, '/#signin-panel');
         return;
       }
       const state = auth.randomState();
@@ -185,7 +185,17 @@ export function createDashboardServer({ store, client, botChannels, logger = con
 
     if (route === '/api/auth/code' && method === 'POST') {
       const { slackUserId } = await readJsonBody(req);
-      await auth.startDmVerification(slackUserId);
+      try {
+        await auth.startDmVerification(slackUserId);
+      } catch (error) {
+        // A mistyped member id is the visitor's problem, not ours, and the
+        // message says what to fix, so it must not read like a server fault.
+        if (!/Slack member ID/.test(error.message)) {
+          throw error;
+        }
+        sendJson(res, 400, { error: error.message });
+        return;
+      }
       sendJson(res, 200, { ok: true });
       return;
     }
