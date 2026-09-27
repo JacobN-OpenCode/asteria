@@ -215,7 +215,10 @@ describe('dashboard server', () => {
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify({ slackUserId: 'not-an-id' }),
       });
-      assert.equal(response.status, 500);
+      // A typo is the visitor's to fix, so it gets a 400 that says what to
+      // type rather than a 500 that blames us.
+      assert.equal(response.status, 400);
+      assert.match((await response.json()).error, /Slack member ID/);
       assert.equal(harness.client.conversations.open.mock.callCount(), 0);
     } finally {
       await harness.stop();
@@ -309,6 +312,17 @@ describe('dashboard server', () => {
     }
   });
 
+  it('sends /login to the sign in panel when the app has no oauth client', async () => {
+    const harness = await startDashboard();
+    try {
+      const response = await fetch(`${harness.base}/login`, { redirect: 'manual' });
+      assert.equal(response.status, 302);
+      assert.match(response.headers.get('location'), /#signin-panel$/);
+    } finally {
+      await harness.stop();
+    }
+  });
+
   it('rejects a forged Slack callback state', async () => {
     const harness = await startDashboard();
     try {
@@ -361,6 +375,15 @@ describe('dashboard stats', () => {
 
     assert.equal(stats.huddles.ended, 1);
     assert.equal(stats.huddles.members, 2);
+    // Every huddle before per-channel attribution shipped is a lifetime point
+    // with no channel attached. Scoping must not make those disappear, which
+    // is the whole production leaderboard.
+    store.awardHuddlePoints('U3', 120);
+    const scoped = store.listHuddleLeaderboard(25, ['Cbot']);
+    assert(
+      scoped.some((row) => row.user_id === 'U3' && row.points === 120),
+      'unattributed history survives a scope',
+    );
     assert.equal(stats.uptime.seconds >= 59, true);
     assert.equal(stats.uptime.state, 'ok');
     assert.equal(stats.leaderboard[0].userId, 'U1');

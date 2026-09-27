@@ -1234,14 +1234,25 @@ export async function createStore(databasePath, options = {}) {
         channelIds.forEach((channelId, index) => {
           params[`$channel_${index}`] = channelId;
         });
+        // huddle_leaderboard is the lifetime total and also holds every
+        // attributed point, so summing both tables would count twice. Start
+        // from the lifetime total and subtract only the points we can prove
+        // landed outside the scope, which keeps the huddles that predate
+        // huddle_channel_points (all of them, until attribution shipped)
+        // instead of silently dropping them.
         return bindAndFetchAll(
           database,
           `
-          SELECT user_id, SUM(points) AS points FROM huddle_channel_points
-          WHERE channel_id IN (${placeholders})
-            AND user_id NOT IN (SELECT slack_user_id FROM dashboard_users WHERE leaderboard_opt_in = 0)
+          SELECT user_id, SUM(points) AS points FROM (
+            SELECT user_id, points FROM huddle_leaderboard
+            UNION ALL
+            SELECT user_id, -points AS points FROM huddle_channel_points
+            WHERE channel_id NOT IN (${placeholders})
+          )
           GROUP BY user_id
-          ORDER BY points DESC, updated_at ASC, user_id ASC
+          HAVING SUM(points) > 0
+            AND user_id NOT IN (SELECT slack_user_id FROM dashboard_users WHERE leaderboard_opt_in = 0)
+          ORDER BY points DESC, user_id ASC
           LIMIT $limit
         `,
           params,
