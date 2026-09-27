@@ -2,6 +2,7 @@ import { App, LogLevel } from '@slack/bolt';
 import { createHomeHandlers } from './app-home/handlers.js';
 import { createChannelPermissions } from './app-home/permissions.js';
 import { loadEnvironment } from './config/env.js';
+import { createDashboardServer } from './dashboard/server.js';
 import { createStore } from './database/store.js';
 import { registerDmDeleteByLink } from './dm/delete-by-link.js';
 import { createHuddleTracker } from './huddles/tracker.js';
@@ -145,6 +146,15 @@ export async function createAsteriaRuntime() {
     logger.error('Unhandled Bolt error', error);
   });
 
+  // The dashboard shares this process so it reads the same in-memory database as the
+  // bot. A second process opening the same sql.js file would overwrite live state.
+  const dashboardServer = createDashboardServer({
+    store,
+    client: app.client,
+    botChannels,
+    logger,
+  });
+
   return {
     app,
     environment,
@@ -154,5 +164,6 @@ export async function createAsteriaRuntime() {
     webhookServer,
     syncPoller,
     huddleTracker,
+    dashboardServer,
   };
 }

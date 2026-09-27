@@ -360,6 +360,22 @@ export async function createStore(databasePath, options = {}) {
       PRIMARY KEY (channel_id, user_id)
     );
 
+    CREATE TABLE IF NOT EXISTS dashboard_sessions (
+      token TEXT PRIMARY KEY,
+      slack_user_id TEXT NOT NULL DEFAULT '',
+      role TEXT NOT NULL DEFAULT 'user',
+      created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      last_seen_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+    );
+
+    CREATE TABLE IF NOT EXISTS dashboard_users (
+      slack_user_id TEXT PRIMARY KEY,
+      display_name TEXT NOT NULL DEFAULT '',
+      leaderboard_opt_in INTEGER NOT NULL DEFAULT 1,
+      last_login_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+    );
+
     CREATE TABLE IF NOT EXISTS huddle_channels (
       channel_id TEXT PRIMARY KEY,
       name TEXT NOT NULL DEFAULT '',
@@ -1223,6 +1239,7 @@ export async function createStore(databasePath, options = {}) {
           `
           SELECT user_id, SUM(points) AS points FROM huddle_channel_points
           WHERE channel_id IN (${placeholders})
+            AND user_id NOT IN (SELECT slack_user_id FROM dashboard_users WHERE leaderboard_opt_in = 0)
           GROUP BY user_id
           ORDER BY points DESC, updated_at ASC, user_id ASC
           LIMIT $limit
@@ -1235,6 +1252,7 @@ export async function createStore(databasePath, options = {}) {
         database,
         `
         SELECT user_id, points FROM huddle_leaderboard
+        WHERE user_id NOT IN (SELECT slack_user_id FROM dashboard_users WHERE leaderboard_opt_in = 0)
         ORDER BY points DESC, updated_at ASC, user_id ASC
         LIMIT $limit
       `,
@@ -1500,6 +1518,108 @@ export async function createStore(databasePath, options = {}) {
         },
       );
       return row.count;
+    },
+
+    createDashboardSession({ token, slackUserId, role }) {
+      bindAndRun(
+        database,
+        `
+        INSERT INTO dashboard_sessions (token, slack_user_id, role, created_at, last_seen_at)
+        VALUES ($token, $slack_user_id, $role, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+        ON CONFLICT(token) DO UPDATE SET
+          slack_user_id = excluded.slack_user_id,
+          role = excluded.role,
+          last_seen_at = CURRENT_TIMESTAMP
+      `,
+        {
+          $token: token,
+          $slack_user_id: slackUserId,
+          $role: role,
+        },
+      );
+      persist();
+    },
+
+    getDashboardSession(token) {
+      if (!token) {
+        return null;
+      }
+      return bindAndFetchOne(
+        database,
+        'SELECT token, slack_user_id, role, created_at, last_seen_at FROM dashboard_sessions WHERE token = $token',
+        { $token: token },
+      );
+    },
+
+    touchDashboardSession(token) {
+      bindAndRun(database, 'UPDATE dashboard_sessions SET last_seen_at = CURRENT_TIMESTAMP WHERE token = $token', {
+        $token: token,
+      });
+    },
+
+    deleteDashboardSession(token) {
+      bindAndRun(database, 'DELETE FROM dashboard_sessions WHERE token = $token', { $token: token });
+      persist();
+    },
+
+    pruneDashboardSessions(maxAgeSeconds = 60 * 60 * 24 * 30) {
+      const cutoff = new Date(Date.now() - maxAgeSeconds * 1000).toISOString().replace('T', ' ').slice(0, 19);
+      bindAndRun(database, 'DELETE FROM dashboard_sessions WHERE last_seen_at < $cutoff', { $cutoff: cutoff });
+      persist();
+    },
+
+    upsertDashboardUser({ slackUserId, displayName = '' }) {
+      bindAndRun(
+        database,
+        `
+        INSERT INTO dashboard_users (slack_user_id, display_name, last_login_at, created_at)
+        VALUES ($slack_user_id, $display_name, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+        ON CONFLICT(slack_user_id) DO UPDATE SET
+          display_name = CASE WHEN excluded.display_name != '' THEN excluded.display_name ELSE dashboard_users.display_name END,
+          last_login_at = CURRENT_TIMESTAMP
+      `,
+        { $slack_user_id: slackUserId, $display_name: displayName },
+      );
+      persist();
+    },
+
+    getDashboardUser(slackUserId) {
+      return bindAndFetchOne(
+        database,
+        'SELECT slack_user_id, display_name, leaderboard_opt_in, last_login_at FROM dashboard_users WHERE slack_user_id = $id',
+        { $id: slackUserId },
+      );
+    },
+
+    setDashboardLeaderboardOptIn(slackUserId, optedIn) {
+      bindAndRun(
+        database,
+        `
+        INSERT INTO dashboard_users (slack_user_id, leaderboard_opt_in, last_login_at)
+        VALUES ($id, $opt_in, CURRENT_TIMESTAMP)
+        ON CONFLICT(slack_user_id) DO UPDATE SET leaderboard_opt_in = excluded.leaderboard_opt_in
+      `,
+        { $id: slackUserId, $opt_in: optedIn ? 1 : 0 },
+      );
+      persist();
+      return this.getDashboardUser(slackUserId);
+    },
+
+    listDashboardUsers() {
+      return bindAndFetchAll(
+        database,
+        'SELECT slack_user_id, display_name, leaderboard_opt_in, last_login_at FROM dashboard_users ORDER BY last_login_at DESC LIMIT 200',
+      );
+    },
+
+    isLeaderboardOptedIn(slackUserId) {
+      const row = bindAndFetchOne(
+        database,
+        'SELECT leaderboard_opt_in FROM dashboard_users WHERE slack_user_id = $id',
+        { $id: slackUserId },
+      );
+      // Anyone who has never touched the switch is on the leaderboard.
+      return !row || Number(row.leaderboard_opt_in) !== 0;
     },
 
     close() {
