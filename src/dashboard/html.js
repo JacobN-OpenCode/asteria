@@ -1,5 +1,5 @@
-const ACCENT = '#86efac';
-const ACCENT_DIM = '#3f6b4f';
+const ACCENT = '#238636';
+const ACCENT_BRIGHT = '#2ea043';
 
 /**
  * The dashboard shell. Deliberately server rendered with a small client script that
@@ -8,25 +8,24 @@ const ACCENT_DIM = '#3f6b4f';
  */
 export function renderDashboardHtml({ oauthConfigured = false, signedIn = false, role = null, baseUrl = '' } = {}) {
   return `<!doctype html>
-<html lang="en" data-base="${escapeHtml(baseUrl)}">
+<html lang="en" data-base="${escapeHtml(baseUrl)}" data-oauth="${oauthConfigured ? '1' : '0'}">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Asteria — live dashboard</title>
+<title>Asteria, live dashboard</title>
 <meta name="color-scheme" content="dark">
 <link rel="icon" href="data:image/svg+xml,${encodeURIComponent(STAR_FAVICON)}">
 <style>${STYLES}</style>
 </head>
 <body>
-<div class="grain" aria-hidden="true"></div>
 <header class="topbar">
   <a class="brand" href="/">
     <span class="mark">${STAR_SVG}</span>
-    <span class="brand-text">Asteria<em>dashboard</em></span>
+    <span class="brand-text">Asteria<em>live status</em></span>
   </a>
   <div class="topbar-right">
-    <span class="live" title="auto refreshing"><i></i>live</span>
-    <span class="uptime-pill" id="uptime-pill">uptime —</span>
+    <span class="live" title="refreshes every 5 seconds"><i></i>live</span>
+    <span class="uptime-pill" id="uptime-pill"><span class="skel skel-sm"></span></span>
     ${
       signedIn
         ? `<span class="who" id="who">${escapeHtml(role || 'user')}</span>
@@ -40,73 +39,48 @@ export function renderDashboardHtml({ oauthConfigured = false, signedIn = false,
   <section class="hero">
     <p class="kicker">personal channel companion</p>
     <h1>Everything Asteria is doing, <span class="accent">right now</span>.</h1>
-    <p class="sub">Huddles it watched, points it handed out, and how long it has been standing by. ${
-      oauthConfigured
-        ? ''
-        : '<span class="hint">Slack sign-in is not configured yet — use the member-ID sign-in below.</span>'
-    }</p>
+    <p class="sub">Huddles it watched, points it handed out, and how long it has been standing by.</p>
   </section>
 
-  <section class="stat-row" id="stat-row">
-    ${statCard('stat-active', 'Huddles live', 'now')}
-    ${statCard('stat-24h', 'Huddles ended', 'last 24h')}
-    ${statCard('stat-members', 'People seen', 'all time')}
-    ${statCard('stat-channels', 'Channels', 'bot is in')}
-    ${statCard('stat-score', 'Points awarded', 'visible to you')}
+  <section class="stat-strip" id="stat-strip">
+    ${statCell('stat-active', 'Huddles live', 'right now')}
+    ${statCell('stat-24h', 'Huddles ended', 'last 24 hours')}
+    ${statCell('stat-members', 'People seen', 'all time')}
+    ${statCell('stat-channels', 'Channels', 'bot is in')}
+    ${statCell('stat-score', 'Points awarded', 'on the board')}
   </section>
 
-  <div class="grid">
+  <div id="cold-start" class="hidden"></div>
+
+  <div class="grid" id="grid">
     <section class="panel leaderboard">
       <header class="panel-head">
         <h2>Leaderboard</h2>
         <span class="tag" id="lb-scope">channels the bot is in</span>
       </header>
       <div id="opt-in-slot"></div>
-      <ol class="board" id="board"></ol>
+      <ol class="board" id="board"><li class="none-slot"><div class="none"><span class="skel" style="width:130px"></span></div></li></ol>
     </section>
 
     <div class="side">
       <section class="panel">
-        <header class="panel-head"><h2>Status</h2><span class="tag" id="state-tag">—</span></header>
+        <header class="panel-head"><h2>Status</h2><span class="tag" id="state-tag"><span class="skel skel-sm"></span></span></header>
         <dl class="kv">
-          <div><dt>Uptime</dt><dd id="kv-uptime">—</dd></div>
-          <div><dt>Started</dt><dd id="kv-started">—</dd></div>
-          <div><dt>Longest huddle</dt><dd id="kv-longest">—</dd></div>
-          <div><dt>Average</dt><dd id="kv-average">—</dd></div>
-          <div><dt>Opted out</dt><dd id="kv-optedout">—</dd></div>
+          <div><dt>Uptime</dt><dd id="kv-uptime"><span class="skel"></span></dd></div>
+          <div><dt>Started</dt><dd id="kv-started"><span class="skel"></span></dd></div>
+          <div><dt>Longest huddle</dt><dd id="kv-longest"><span class="skel"></span></dd></div>
+          <div><dt>Average huddle</dt><dd id="kv-average"><span class="skel"></span></dd></div>
+          <div><dt>Opted out</dt><dd id="kv-optedout"><span class="skel"></span></dd></div>
         </dl>
-        <div class="spark" id="spark" aria-hidden="true"></div>
+        <div class="spark" id="spark"></div>
       </section>
 
       <section class="panel">
-        <header class="panel-head"><h2>Channels</h2><span class="tag" id="ch-tag">—</span></header>
-        <ul class="channels" id="channels"></ul>
-      </section>
-
-      <section class="panel" id="login-panel">
-        <header class="panel-head"><h2>${signedIn ? 'Your access' : 'Sign in'}</h2></header>
-        <div id="login-body"></div>
+        <header class="panel-head"><h2>Channels</h2><span class="tag" id="ch-tag"><span class="skel skel-sm"></span></span></header>
+        <ul class="channels" id="channels"><li class="none-slot"><div class="none"><span class="skel" style="width:96px"></span></div></li></ul>
       </section>
     </div>
   </div>
-
-  ${
-    signedIn
-      ? ''
-      : `<section class="panel signin" id="signin-panel">
-    <header class="panel-head"><h2>Sign in</h2><span class="tag">Slack verified</span></header>
-    <p class="muted">Asteria checks who you are against Slack — nothing is trusted from the browser.</p>
-    <div class="signin-row">
-      <input id="slack-id" placeholder="U012ABCDEF — your Slack member ID" autocomplete="off" spellcheck="false">
-      <button class="btn" id="send-code">Send me a code</button>
-    </div>
-    <div class="signin-row hidden" id="code-row">
-      <input id="slack-code" placeholder="6-digit code from the DM" inputmode="numeric" maxlength="6" autocomplete="one-time-code">
-      <button class="btn" id="verify-code">Verify</button>
-    </div>
-    <p class="msg" id="signin-msg"></p>
-  </section>`
-  }
 
   <section class="panel hidden" id="log-panel">
     <header class="panel-head"><h2>Activity</h2><span class="tag">owner only</span></header>
@@ -115,8 +89,8 @@ export function renderDashboardHtml({ oauthConfigured = false, signedIn = false,
 </main>
 
 <footer>
-  <span>Asteria · <a href="/health">health</a> · <a href="/rss.xml">rss</a></span>
-  <span class="muted" id="foot-updated">—</span>
+  <span>Asteria, <a href="/health">health</a>, <a href="/rss.xml">rss</a></span>
+  <span class="muted" id="foot-updated"><span class="skel skel-sm"></span></span>
 </footer>
 
 <script>${SCRIPT}</script>
@@ -124,169 +98,189 @@ export function renderDashboardHtml({ oauthConfigured = false, signedIn = false,
 </html>`;
 }
 
-function statCard(id, label, hint) {
-  return `<article class="stat">
+function statCell(id, label, hint) {
+  return `<div class="stat">
   <p class="stat-label">${escapeHtml(label)}</p>
-  <p class="stat-value" id="${id}">—</p>
+  <p class="stat-value" id="${id}"><span class="skel skel-lg"></span></p>
   <p class="stat-hint">${escapeHtml(hint)}</p>
-</article>`;
+</div>`;
 }
 
-const STAR_SVG = `<svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3.2l2.1 4.6 5 .6-3.7 3.4 1 4.9L12 14.4 7.6 16.7l1-4.9L4.9 8.4l5-.6z"/></svg>`;
-const STAR_FAVICON = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><rect width="24" height="24" rx="6" fill="#0b0d0c"/><path d="M12 4l2 4.4 4.8.6-3.6 3.3.95 4.7L12 14.7 7.85 17l.95-4.7L5.2 9l4.8-.6z" fill="none" stroke="#86efac" stroke-width="1.5"/></svg>`;
+const STAR_SVG = `<svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3.2l2.1 4.6 5 .6-3.7 3.4 1 4.9L12 14.4 7.6 16.7l1-4.9L4.9 8.4l5-.6z"/></svg>`;
+const STAR_FAVICON = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><rect width="24" height="24" rx="5" fill="#0d1117"/><path d="M12 4l2 4.4 4.8.6-3.6 3.3.95 4.7L12 14.7 7.85 17l.95-4.7L5.2 9l4.8-.6z" fill="none" stroke="#2ea043" stroke-width="1.5"/></svg>`;
 
 const STYLES = `
 :root{color-scheme:dark;
-  --bg:#0a0b0a; --bg-2:#0e100f; --panel:#111312; --panel-2:#151817; --line:#1e2320; --line-2:#2a302c;
-  --ink:#e8ece9; --ink-2:#9aa39d; --ink-3:#6b736d;
-  --accent:${ACCENT}; --accent-dim:${ACCENT_DIM};
-  --radius:14px; --radius-sm:9px;
+  --bg:#0d1117; --surface:#161b22; --raised:#21262d; --line:#30363d; --line-soft:#21262d;
+  --ink:#f0f6fc; --ink-2:#c9d1d9; --ink-3:#8b949e;
+  --accent:${ACCENT}; --accent-bright:${ACCENT_BRIGHT};
+  --gold:#ffd700; --bronze:#cd7f32; --silver:#c0c0c0; --red:#f85149;
+  --r:10px; --r-sm:6px;
   --mono:ui-monospace,SFMono-Regular,"SF Mono",Menlo,Consolas,monospace;
-  --sans:-apple-system,BlinkMacSystemFont,"Segoe UI",Inter,Roboto,Helvetica,Arial,sans-serif;
+  --sans:system-ui,-apple-system,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
 }
 *{box-sizing:border-box}
 html{-webkit-text-size-adjust:100%}
 body{
-  margin:0; background:
-    radial-gradient(1100px 620px at 78% -12%, rgba(134,239,172,.07), transparent 62%),
-    radial-gradient(820px 480px at 8% 0%, rgba(134,239,172,.035), transparent 60%),
-    linear-gradient(180deg,var(--bg-2),var(--bg) 42%);
-  color:var(--ink); font-family:var(--sans); font-size:15px; line-height:1.55;
-  min-height:100vh; -webkit-font-smoothing:antialiased;
+  margin:0; min-height:100vh; color:var(--ink); font-family:var(--sans); font-size:15px; line-height:1.5;
+  background:radial-gradient(900px 400px at 50% -8%, rgba(46,160,67,.07), transparent 70%),var(--bg);
+  -webkit-font-smoothing:antialiased;
 }
-.grain{position:fixed;inset:0;pointer-events:none;opacity:.035;z-index:0;
-  background-image:radial-gradient(circle at 1px 1px,#fff 1px,transparent 0);background-size:4px 4px}
-a{color:var(--accent);text-decoration:none}
+a{color:var(--accent-bright);text-decoration:none}
 a:hover{text-decoration:underline}
 .hidden{display:none !important}
-.muted{color:var(--ink-2)}
-.hint{color:var(--ink-3)}
+.muted{color:var(--ink-3)}
 
 /* top bar */
-.topbar{position:relative;z-index:2;display:flex;align-items:center;justify-content:space-between;gap:16px;
-  padding:14px clamp(16px,4vw,40px);border-bottom:1px solid var(--line);
-  background:linear-gradient(180deg,rgba(10,11,10,.92),rgba(10,11,10,.55));backdrop-filter:blur(12px);
-  position:sticky;top:0}
-.brand{display:flex;align-items:center;gap:10px;color:var(--ink);font-weight:600;letter-spacing:-.01em}
+.topbar{display:flex;align-items:center;justify-content:space-between;gap:16px;
+  padding:0 clamp(16px,4vw,36px);height:56px;background:rgba(13,17,23,.86);
+  backdrop-filter:saturate(140%) blur(10px);border-bottom:1px solid var(--line);
+  position:sticky;top:0;z-index:2}
+.brand{display:flex;align-items:center;gap:9px;color:var(--ink);font-weight:600;letter-spacing:-.01em}
 .brand:hover{text-decoration:none}
-.mark{display:grid;place-items:center;width:34px;height:34px;border-radius:10px;color:var(--accent);
-  background:linear-gradient(180deg,#141815,#0d100e);border:1px solid var(--line-2);box-shadow:0 0 0 1px rgba(134,239,172,.06) inset}
-.brand-text{display:flex;flex-direction:column;line-height:1.15}
-.brand-text em{font-style:normal;font-size:10.5px;letter-spacing:.16em;text-transform:uppercase;color:var(--ink-3)}
-.topbar-right{display:flex;align-items:center;gap:10px;flex-wrap:wrap}
-.live{display:inline-flex;align-items:center;gap:6px;font-size:10.5px;letter-spacing:.16em;text-transform:uppercase;color:var(--ink-2);
-  border:1px solid var(--line-2);border-radius:999px;padding:4px 9px}
-.live i{width:6px;height:6px;border-radius:50%;background:var(--accent);box-shadow:0 0 0 0 rgba(134,239,172,.5);animation:pulse 2.4s infinite}
-@keyframes pulse{0%{box-shadow:0 0 0 0 rgba(134,239,172,.45)}70%{box-shadow:0 0 0 7px rgba(134,239,172,0)}100%{box-shadow:0 0 0 0 rgba(134,239,172,0)}}
-.uptime-pill,.who{font-family:var(--mono);font-size:12px;color:var(--ink-2);border:1px solid var(--line);
-  border-radius:999px;padding:5px 11px;background:var(--panel)}
-.who{color:var(--accent);border-color:rgba(134,239,172,.28)}
-.btn{font:inherit;font-size:13px;font-weight:550;color:#07110b;background:linear-gradient(180deg,#a7f3c4,#86efac);
-  border:1px solid #6ee7a5;border-radius:9px;padding:7px 14px;cursor:pointer;transition:.16s ease}
-.btn:hover{filter:brightness(1.07);text-decoration:none}
+.mark{display:grid;place-items:center;width:28px;height:28px;border-radius:var(--r-sm);color:var(--accent-bright);
+  background:var(--surface);box-shadow:0 0 0 1px var(--line)}
+.brand-text{display:flex;flex-direction:column;line-height:1.2}
+.brand-text em{font-style:normal;font-size:9.5px;letter-spacing:.15em;text-transform:uppercase;color:var(--ink-3)}
+.topbar-right{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+.live{display:inline-flex;align-items:center;gap:6px;font-size:10px;letter-spacing:.14em;text-transform:uppercase;
+  color:var(--ink-2);padding:4px 9px;border-radius:999px;box-shadow:0 0 0 1px var(--line)}
+.live i{width:5px;height:5px;border-radius:50%;background:var(--accent-bright);animation:pulse 2.4s infinite}
+@keyframes pulse{0%,100%{opacity:1}50%{opacity:.35}}
+.uptime-pill,.who{font-family:var(--mono);font-size:11.5px;color:var(--ink-2);padding:4px 9px;
+  border-radius:999px;box-shadow:0 0 0 1px var(--line);min-width:52px;display:inline-flex;align-items:center;gap:6px}
+.who{color:var(--accent-bright);box-shadow:0 0 0 1px rgba(46,160,67,.35)}
+.btn{display:inline-flex;align-items:center;font:inherit;font-size:13px;font-weight:600;color:#fff;
+  background:var(--accent);border:0;border-radius:var(--r-sm);padding:7px 14px;cursor:pointer;transition:.14s ease}
+.btn:hover{background:var(--accent-bright);text-decoration:none}
 .btn:active{transform:translateY(1px)}
-.btn.ghost{background:transparent;color:var(--ink-2);border-color:var(--line-2)}
-.btn.ghost:hover{color:var(--ink);border-color:var(--accent-dim)}
-.btn[disabled]{opacity:.55;cursor:not-allowed}
+.btn.ghost{background:transparent;color:var(--ink-2);box-shadow:0 0 0 1px var(--line)}
+.btn.ghost:hover{color:var(--ink);background:var(--raised)}
 
-main{position:relative;z-index:1;max-width:1220px;margin:0 auto;padding:clamp(22px,4vw,44px) clamp(16px,4vw,40px) 60px}
+main{max-width:1180px;margin:0 auto;padding:clamp(26px,4vw,44px) clamp(16px,4vw,36px) 56px}
 
 /* hero */
-.hero{max-width:760px;margin-bottom:26px}
-.kicker{margin:0 0 10px;font-size:10.5px;letter-spacing:.2em;text-transform:uppercase;color:var(--accent-dim)}
-h1{margin:0 0 10px;font-size:clamp(28px,4.6vw,46px);line-height:1.06;letter-spacing:-.028em;font-weight:660}
-h1 .accent{color:var(--accent)}
-.sub{margin:0;color:var(--ink-2);font-size:15px;max-width:60ch}
+.hero{max-width:680px;margin-bottom:24px}
+.kicker{margin:0 0 10px;font-size:10px;letter-spacing:.18em;text-transform:uppercase;color:var(--accent-bright);font-weight:600}
+h1{margin:0 0 9px;font-size:clamp(26px,4.2vw,42px);line-height:1.08;letter-spacing:-.028em;font-weight:650}
+h1 .accent{color:var(--accent-bright)}
+.sub{margin:0;color:var(--ink-3);font-size:15px;max-width:56ch}
 
-/* stat cards */
-.stat-row{display:grid;grid-template-columns:repeat(auto-fit,minmax(168px,1fr));gap:12px;margin-bottom:18px}
-.stat{position:relative;overflow:hidden;background:linear-gradient(180deg,var(--panel-2),var(--panel));
-  border:1px solid var(--line);border-radius:var(--radius);padding:14px 15px 13px}
-.stat::after{content:"";position:absolute;inset:0 0 auto;height:1px;background:linear-gradient(90deg,transparent,rgba(134,239,172,.35),transparent)}
-.stat-label{margin:0;font-size:11px;letter-spacing:.09em;text-transform:uppercase;color:var(--ink-3)}
-.stat-value{margin:6px 0 2px;font-family:var(--mono);font-size:29px;line-height:1.05;letter-spacing:-.02em;
-  font-variant-numeric:tabular-nums;transition:color .3s}
-.stat-value.bump{color:var(--accent)}
-.stat-hint{margin:0;font-size:11.5px;color:var(--ink-3)}
+/* stat strip */
+.stat-strip{display:grid;grid-template-columns:repeat(5,minmax(0,1fr));background:var(--surface);
+  border-radius:var(--r);box-shadow:0 0 0 1px var(--line);margin-bottom:18px;overflow:hidden}
+@media (max-width:860px){.stat-strip{grid-template-columns:repeat(2,minmax(0,1fr))}}
+@media (max-width:460px){.stat-strip{grid-template-columns:1fr}}
+.stat{position:relative;padding:13px 15px 12px}
+.stat+.stat{box-shadow:inset 1px 0 0 var(--line)}
+.stat::before{content:"";position:absolute;top:0;left:0;right:0;height:1px;
+  background:linear-gradient(90deg,transparent,rgba(46,160,67,.5),transparent);opacity:.55}
+.stat-label{margin:0;font-size:10px;letter-spacing:.11em;text-transform:uppercase;color:var(--ink-3);font-weight:600}
+.stat-value{margin:7px 0 1px;font-family:var(--mono);font-size:27px;line-height:1;font-variant-numeric:tabular-nums;
+  letter-spacing:-.02em;transition:color .3s}
+.stat-value.bump{color:var(--accent-bright)}
+.stat-hint{margin:0;font-size:11px;color:var(--ink-3)}
 
 /* layout */
-.grid{display:grid;grid-template-columns:minmax(0,1.62fr) minmax(0,1fr);gap:14px;align-items:start}
+.grid{display:grid;grid-template-columns:minmax(0,1.6fr) minmax(0,1fr);gap:16px;align-items:start}
 @media (max-width:940px){.grid{grid-template-columns:1fr}}
-.panel{background:linear-gradient(180deg,var(--panel-2),var(--panel));border:1px solid var(--line);
-  border-radius:var(--radius);padding:15px 16px 16px;margin-bottom:14px}
-.panel-head{display:flex;align-items:center;justify-content:space-between;gap:10px;margin-bottom:12px}
-.panel-head h2{margin:0;font-size:12.5px;letter-spacing:.13em;text-transform:uppercase;color:var(--ink-2);font-weight:600}
-.tag{font-family:var(--mono);font-size:10.5px;color:var(--ink-3);border:1px solid var(--line-2);
-  border-radius:999px;padding:3px 9px;white-space:nowrap}
-.tag.ok{color:var(--accent);border-color:rgba(134,239,172,.3)}
+.panel{background:var(--surface);border-radius:var(--r);box-shadow:0 0 0 1px var(--line);
+  padding:15px 16px 16px;margin-bottom:16px}
+.panel-head{display:flex;align-items:center;justify-content:space-between;gap:10px;margin-bottom:13px}
+.panel-head h2{margin:0;font-size:11px;letter-spacing:.14em;text-transform:uppercase;color:var(--ink-2);font-weight:700}
+.tag{font-family:var(--mono);font-size:10.5px;color:var(--ink-3);border-radius:999px;padding:3px 8px;
+  box-shadow:0 0 0 1px var(--line-soft);white-space:nowrap;display:inline-flex;align-items:center;gap:6px;min-height:20px}
+.tag.ok{color:var(--accent-bright);box-shadow:0 0 0 1px rgba(46,160,67,.35)}
 
 /* leaderboard */
 .board{list-style:none;margin:0;padding:0}
-.board li{display:grid;grid-template-columns:26px 30px minmax(0,1fr) auto;align-items:center;gap:10px;
-  padding:8px 8px;border-radius:var(--radius-sm);border:1px solid transparent}
+.board li{display:grid;grid-template-columns:24px 28px minmax(0,1fr) auto;align-items:center;gap:11px;
+  padding:7px 9px;border-radius:var(--r-sm);box-shadow:0 0 0 1px transparent}
 .board li+li{margin-top:2px}
-.board li:hover{background:rgba(255,255,255,.017);border-color:var(--line)}
-.board li.me{background:rgba(134,239,172,.055);border-color:rgba(134,239,172,.26)}
-.rank{font-family:var(--mono);font-size:12.5px;color:var(--ink-3);text-align:right}
-li:nth-child(1) .rank{color:var(--accent)}
-.avatar{width:30px;height:30px;border-radius:9px;object-fit:cover;background:#161a17;border:1px solid var(--line-2)}
+.board li:hover{background:var(--raised)}
+.board li.me{background:rgba(46,160,67,.09);box-shadow:0 0 0 1px rgba(46,160,67,.4)}
+.rank{font-family:var(--mono);font-size:12px;color:var(--ink-3);text-align:right}
+.board li:nth-child(1) .rank{color:var(--gold);font-weight:700}
+.board li:nth-child(2) .rank{color:var(--bronze);font-weight:700}
+.board li:nth-child(3) .rank{color:var(--silver);font-weight:700}
+.avatar{width:28px;height:28px;border-radius:var(--r-sm);object-fit:cover;background:var(--raised);
+  box-shadow:0 0 0 1px var(--line);display:grid;place-items:center;font-size:10.5px;font-weight:700;color:var(--ink-3)}
 .who-cell{display:flex;flex-direction:column;min-width:0}
 .who-name{font-size:14px;font-weight:520;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .who-sub{font-size:11.5px;color:var(--ink-3);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .pts{font-family:var(--mono);font-size:14px;font-variant-numeric:tabular-nums}
-.empty{padding:16px 10px;color:var(--ink-3);font-size:13.5px;text-align:center;border:1px dashed var(--line-2);border-radius:var(--radius-sm)}
+.pts.zero{color:var(--ink-3)}
+
+/* empty states, the whole point of a quiet design */
+.none{display:grid;justify-items:center;gap:3px;padding:22px 16px;text-align:center;
+  border-radius:var(--r-sm);box-shadow:0 0 0 1px var(--line-soft)}
+.none-mark{display:grid;place-items:center;width:26px;height:26px;border-radius:var(--r-sm);color:var(--ink-3);
+  background:var(--raised);box-shadow:0 0 0 1px var(--line);margin-bottom:5px}
+.none-title{margin:0;font-size:13px;font-weight:600;color:var(--ink-2)}
+.none-hint{margin:0;font-size:12px;color:var(--ink-3);max-width:34ch}
+.none-slot{padding:0;list-style:none;display:block !important}
+.log li.none-slot,.board li.none-slot,.channels li.none-slot{grid-template-columns:none;background:none}
+.placeholder{color:var(--ink-3);font-style:normal}
+
+/* loading skeletons, so nothing ever shows a bare dash */
+.skel{display:inline-block;width:100%;height:11px;border-radius:3px;
+  background:linear-gradient(90deg,var(--raised),#2b3138,var(--raised));background-size:200% 100%;
+  animation:shimmer 1.5s linear infinite}
+.skel-sm{width:44px;height:9px}
+.skel-lg{width:52px;height:22px}
+@keyframes shimmer{0%{background-position:200% 0}100%{background-position:-200% 0}}
+
+/* cold start, when the bot has literally nothing yet */
+.cold{display:grid;justify-items:center;gap:9px;text-align:center;padding:52px 20px;background:var(--surface);
+  border-radius:var(--r);box-shadow:0 0 0 1px var(--line)}
+.cold h2{margin:0;font-size:19px;letter-spacing:-.01em}
+.cold p{margin:0;color:var(--ink-3);max-width:46ch;font-size:14px}
+.cold .none-mark{width:38px;height:38px;margin-bottom:2px}
 
 /* opt-in switch */
-.optin{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:12px;
-  padding:10px 12px;border:1px solid rgba(134,239,172,.22);border-radius:var(--radius-sm);background:rgba(134,239,172,.04)}
+.optin{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:13px;
+  padding:10px 12px;border-radius:var(--r-sm);background:rgba(46,160,67,.07);box-shadow:0 0 0 1px rgba(46,160,67,.25)}
 .optin-text{display:flex;flex-direction:column}
-.optin-text b{font-size:13.5px;font-weight:560}
+.optin-text b{font-size:13.5px;font-weight:600}
 .optin-text span{font-size:11.5px;color:var(--ink-3)}
-.switch{position:relative;width:46px;height:26px;border-radius:999px;background:#1c201e;border:1px solid var(--line-2);
-  cursor:pointer;transition:.18s;flex:none}
-.switch::after{content:"";position:absolute;top:2px;left:2px;width:20px;height:20px;border-radius:50%;
-  background:#5c6660;transition:.18s}
-.switch[aria-checked="true"]{background:rgba(134,239,172,.22);border-color:rgba(134,239,172,.5)}
-.switch[aria-checked="true"]::after{left:22px;background:var(--accent)}
+.switch{position:relative;width:44px;height:25px;border-radius:999px;background:var(--raised);border:0;
+  box-shadow:0 0 0 1px var(--line);cursor:pointer;transition:.18s;flex:none}
+.switch::after{content:"";position:absolute;top:3px;left:3px;width:19px;height:19px;border-radius:50%;
+  background:var(--ink-3);transition:.18s}
+.switch[aria-checked="true"]{background:rgba(46,160,67,.28);box-shadow:0 0 0 1px rgba(46,160,67,.6)}
+.switch[aria-checked="true"]::after{left:22px;background:var(--accent-bright)}
 
 /* kv list */
-.kv{margin:0;display:grid;gap:1px;background:var(--line);border:1px solid var(--line);border-radius:var(--radius-sm);overflow:hidden}
-.kv>div{display:flex;justify-content:space-between;gap:10px;background:var(--panel-2);padding:9px 11px}
+.kv{margin:0;display:grid;gap:1px;background:var(--line-soft);border-radius:var(--r-sm);overflow:hidden;
+  box-shadow:0 0 0 1px var(--line-soft)}
+.kv>div{display:flex;justify-content:space-between;align-items:center;gap:10px;background:var(--surface);padding:8px 11px}
 .kv dt{font-size:12.5px;color:var(--ink-2)}
-.kv dd{margin:0;font-family:var(--mono);font-size:12.5px;font-variant-numeric:tabular-nums}
-.spark{display:flex;align-items:flex-end;gap:3px;height:44px;margin-top:12px;padding:0 1px}
-.spark i{flex:1;background:linear-gradient(180deg,rgba(134,239,172,.75),rgba(134,239,172,.14));border-radius:2px 2px 0 0;min-height:2px}
+.kv dd{margin:0;font-family:var(--mono);font-size:12.5px;font-variant-numeric:tabular-nums;text-align:right}
+.kv dd .placeholder{font-family:var(--sans);font-size:12px}
+.spark{display:flex;align-items:flex-end;gap:3px;height:40px;margin-top:13px}
+.spark i{flex:1;background:linear-gradient(180deg,rgba(46,160,67,.85),rgba(46,160,67,.16));border-radius:2px 2px 0 0;min-height:2px}
+.spark-empty{margin-top:13px}
 
 /* channels */
 .channels{list-style:none;margin:0;padding:0;display:grid;gap:6px}
 .channels li{display:flex;align-items:center;justify-content:space-between;gap:10px;padding:8px 10px;
-  background:var(--panel-2);border:1px solid var(--line);border-radius:var(--radius-sm);font-size:13.5px}
+  background:var(--raised);border-radius:var(--r-sm);font-size:13.5px}
 .channels .name{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-.dot{width:7px;height:7px;border-radius:50%;flex:none;background:#3a423d;box-shadow:0 0 0 2px rgba(58,66,61,.2)}
-.dot.on{background:var(--accent);box-shadow:0 0 0 2px rgba(134,239,172,.18)}
-.dot.paused{background:#c9a227}
+.dot{width:6px;height:6px;border-radius:50%;flex:none;background:var(--ink-3);box-shadow:0 0 0 2px rgba(139,148,158,.16)}
+.dot.on{background:var(--accent-bright);box-shadow:0 0 0 2px rgba(46,160,67,.2)}
+.dot.paused{background:var(--gold)}
 
-/* sign in */
-.signin-row{display:flex;gap:8px;margin-top:10px;flex-wrap:wrap}
-input{flex:1;min-width:210px;font:inherit;font-size:14px;color:var(--ink);background:#0c0e0d;
-  border:1px solid var(--line-2);border-radius:9px;padding:9px 12px}
-input::placeholder{color:#5c635e}
-input:focus{outline:none;border-color:var(--accent-dim);box-shadow:0 0 0 3px rgba(134,239,172,.1)}
-.msg{margin:10px 0 0;font-size:13px;min-height:1.2em}
-.msg.ok{color:var(--accent)}
-.msg.bad{color:#fca5a5}
-
-/* log */
-.log{list-style:none;margin:0;padding:0;display:grid;gap:1px;background:var(--line);
-  border:1px solid var(--line);border-radius:var(--radius-sm);overflow:hidden;max-height:340px;overflow-y:auto}
-.log li{display:grid;grid-template-columns:78px 132px minmax(0,1fr);gap:10px;background:var(--panel-2);
+/* activity log */
+.log{list-style:none;margin:0;padding:0;display:grid;gap:1px;background:var(--line-soft);
+  border-radius:var(--r-sm);overflow:hidden;max-height:340px;overflow-y:auto;box-shadow:0 0 0 1px var(--line-soft)}
+.log li{display:grid;grid-template-columns:74px 128px minmax(0,1fr);gap:10px;background:var(--surface);
   padding:7px 10px;font-size:12.5px;align-items:baseline}
 .log time{font-family:var(--mono);font-size:11.5px;color:var(--ink-3)}
-.log .act{font-family:var(--mono);font-size:11.5px;color:var(--accent);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.log .act{font-family:var(--mono);font-size:11.5px;color:var(--accent-bright);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .log .det{color:var(--ink-2);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 
-footer{position:relative;z-index:1;display:flex;justify-content:space-between;gap:12px;flex-wrap:wrap;
-  max-width:1220px;margin:0 auto;padding:18px clamp(16px,4vw,40px) 34px;
+footer{display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap;
+  max-width:1180px;margin:0 auto;padding:16px clamp(16px,4vw,36px) 32px;
   border-top:1px solid var(--line);font-size:12.5px;color:var(--ink-3)}
 @media (prefers-reduced-motion:reduce){*{animation:none !important;transition:none !important}}
 `;
@@ -295,8 +289,22 @@ const SCRIPT = `
 const $ = (id) => document.getElementById(id);
 const base = document.documentElement.dataset.base || '';
 const fmt = new Intl.NumberFormat();
-let viewer = null, pointsSeen = {};
+const STAR_MARK = '${STAR_SVG}';
+let viewer = null, first = true;
 
+const NONE_MARK = '<span class="none-mark">' + STAR_MARK + '</span>';
+function none(title, hint){
+  return '<div class="none">' + NONE_MARK +
+    '<p class="none-title">' + title + '</p>' +
+    '<p class="none-hint">' + hint + '</p></div>';
+}
+function cold(title, body){
+  const slot = $('cold-start');
+  slot.classList.remove('hidden');
+  slot.innerHTML = '<div class="cold">' + NONE_MARK + '<h2>' + title + '</h2><p>' + body + '</p></div>';
+  $('stat-strip').classList.add('hidden');
+  $('grid').classList.add('hidden');
+}
 function duration(seconds){
   const s = Math.max(0, Math.floor(seconds || 0));
   const d = Math.floor(s / 86400), h = Math.floor(s % 86400 / 3600), m = Math.floor(s % 3600 / 60);
@@ -310,35 +318,50 @@ function initials(text){
 }
 function setValue(id, value){
   const node = $(id);
-  if (!node || node.textContent === String(value)) return;
-  node.textContent = value;
+  if (!node) return;
+  const text = String(value);
+  if (node.textContent === text) return;
+  node.textContent = text;
+  if (first) return;
   node.classList.add('bump');
   setTimeout(() => node.classList.remove('bump'), 700);
 }
+function setField(id, value, placeholder){
+  const node = $(id);
+  if (!node) return;
+  node.textContent = value == null || value === '' ? '' : String(value);
+  if (!node.textContent) node.innerHTML = '<span class="placeholder">' + placeholder + '</span>';
+}
 
-function renderBoard(rows){
+function renderBoard(rows, viewer){
   const board = $('board');
   if (!rows.length){
-    board.innerHTML = '<li class="empty">No points yet. Huddles only count when the bot is actually in the channel.</li>';
+    const everyoneHidden = viewer && viewer.signedIn && viewer.isOwner;
+    board.innerHTML = '<li class="none-slot">' + none(
+      'No points on the board',
+      everyoneHidden
+        ? 'Nobody has opted in to the leaderboard yet.'
+        : 'Points appear once the bot is in a channel and someone joins a huddle.'
+    ) + '</li>';
     return;
   }
   board.innerHTML = rows.map((row) => {
     const name = row.displayName || row.userId;
-    const sub = [row.pronouns, row.realName && row.realName !== name ? row.realName : ''].filter(Boolean).join(' · ');
+    const sub = [row.pronouns, row.realName && row.realName !== name ? row.realName : ''].filter(Boolean).join(' / ');
     const avatar = row.imageUrl
-      ? '<img class="avatar" alt="" loading="lazy" src="' + row.imageUrl + '" onerror="this.replaceWith(Object.assign(document.createElement('span'),{className:'avatar',textContent:'' + initials(name) + ''}))">'
-      : '<span class="avatar">' + initials(name) + '</span>';
-    return '<li' + (viewer && row.userId === viewer.userId ? ' class="me"' : '') + '>' +
+      ? '<img class="avatar" alt="" loading="lazy" src="' + row.imageUrl + '" onerror="this.replaceWith(Object.assign(document.createElement(\\'span\\'),{className:\\'avatar\\',textContent:\\'\\' + initials(name) + \\'}))">'
+      : '<span class="avatar">' + escapeHtml(initials(name)) + '</span>';
+    return '<li' + (viewer && viewer.userId === row.userId ? ' class="me"' : '') + '>' +
       '<span class="rank">' + row.rank + '</span>' + avatar +
       '<span class="who-cell"><span class="who-name">' + escapeHtml(name) + '</span>' +
       (sub ? '<span class="who-sub">' + escapeHtml(sub) + '</span>' : '') + '</span>' +
-      '<span class="pts">' + fmt.format(row.points) + '</span></li>';
+      '<span class="pts' + (row.points ? '' : ' zero') + '">' + fmt.format(row.points) + '</span></li>';
   }).join('');
 }
 
 function renderOptIn(){
   const slot = $('opt-in-slot');
-  if (!viewer) { slot.innerHTML = ''; return; }
+  if (!viewer || !viewer.signedIn) { slot.innerHTML = ''; return; }
   slot.innerHTML = '<div class="optin"><span class="optin-text"><b>On the leaderboard</b>' +
     '<span>' + (viewer.role === 'owner' ? 'You see everything, yours or not' : 'Turn this off to hide your points') + '</span></span>' +
     '<button class="switch" id="optin-switch" role="switch" aria-checked="' + viewer.leaderboardOptIn + '" aria-label="Show me on the leaderboard"></button></div>';
@@ -366,30 +389,43 @@ async function toggleOptIn(){
 function renderChannels(channels, botCount){
   const list = $('channels');
   $('ch-tag').textContent = botCount + ' in bot';
-  if (!channels.length){ list.innerHTML = '<li class="empty">No tracked channels configured.</li>'; return; }
+  if (!channels.length){
+    list.innerHTML = '<li class="none-slot">' + none('No channels yet', 'Add Asteria to a channel and it shows up here.') + '</li>';
+    return;
+  }
   list.innerHTML = channels.map((channel) => {
     const cls = channel.paused ? 'paused' : (channel.enabled ? 'on' : '');
     const state = channel.paused ? 'paused' : (channel.enabled ? 'tracking' : 'off');
-    return '<li><span class="name">' + (channel.inBot ? '' : '⚠ ') + escapeHtml(channel.name) + '</span>' +
-      '<span class="tag' + (channel.enabled ? ' ok' : '') + '"><i class="dot ' + cls + '" style="display:inline-block;margin-right:6px"></i>' + state + '</span></li>';
+    return '<li><span class="name">' + (channel.inBot ? '' : 'not in bot: ') + escapeHtml(channel.name) + '</span>' +
+      '<span class="tag' + (channel.enabled ? ' ok' : '') + '"><i class="dot ' + cls + '"></i>' + state + '</span></li>';
   }).join('');
 }
 
-function renderLog(entries){
-  if (!entries) return;
-  $('log-panel').classList.remove('hidden');
+function renderLog(entries, allowed){
+  if (!allowed) return;
+  const panel = $('log-panel');
+  panel.classList.remove('hidden');
   const list = $('log');
-  if (!entries.length){ list.innerHTML = '<li><span class="det">Nothing logged yet.</span></li>'; return; }
+  if (!entries || !entries.length){
+    list.innerHTML = '<li class="none-slot">' + none('Nothing logged yet', 'Owner actions show up here as soon as they happen.') + '</li>';
+    return;
+  }
   list.innerHTML = entries.map((entry) => {
     const at = new Date(String(entry.created_at).replace(' ', 'T') + 'Z');
     return '<li><time>' + at.toISOString().slice(11, 19) + '</time>' +
       '<span class="act">' + escapeHtml(entry.action) + '</span>' +
-      '<span class="det">' + escapeHtml([entry.user_id, entry.detail, entry.channel_id].filter(Boolean).join(' · ')) + '</span></li>';
+      '<span class="det">' + escapeHtml([entry.user_id, entry.detail, entry.channel_id].filter(Boolean).join(' / ')) + '</span></li>';
   }).join('');
 }
 
 function renderSparkline(values){
   const node = $('spark');
+  if (!values.length || values.every((value) => !value)){
+    node.innerHTML = none('No points to chart', 'The chart fills in once the leaderboard has scores.');
+    node.classList.add('spark-empty');
+    return;
+  }
+  node.classList.remove('spark-empty');
   const max = Math.max(1, ...values);
   node.innerHTML = values.map((value) => '<i style="height:' + Math.max(3, Math.round(value / max * 100)) + '%"></i>').join('');
 }
@@ -399,65 +435,47 @@ function escapeHtml(value){
 }
 
 async function refresh(){
-  const response = await fetch(base + '/api/stats', { headers: { accept: 'application/json' } });
-  if (!response.ok) return;
-  const data = await response.json();
+  let data;
+  try {
+    const response = await fetch(base + '/api/stats', { headers: { accept: 'application/json' } });
+    if (!response.ok) return;
+    data = await response.json();
+  } catch (error) {
+    return;
+  }
   viewer = data.viewer;
   const h = data.huddles, u = data.uptime;
+
+  const boardTotal = data.leaderboard.reduce((total, row) => total + row.points, 0);
+  const bare = !h.total && !h.members && !data.botChannels.count;
+
   setValue('stat-active', fmt.format(h.active));
   setValue('stat-24h', fmt.format(h.last24h));
   setValue('stat-members', fmt.format(h.members));
   setValue('stat-channels', fmt.format(data.botChannels.count));
-  setValue('stat-score', fmt.format(data.leaderboard.reduce((total, row) => total + row.points, 0)));
+  setValue('stat-score', fmt.format(boardTotal));
   $('uptime-pill').textContent = 'up ' + duration(u.seconds);
-  $('kv-uptime').textContent = duration(u.seconds);
-  $('kv-started').textContent = new Date(u.startedAt).toISOString().slice(0, 16).replace('T', ' ') + 'Z';
-  $('kv-longest').textContent = duration(h.longestSeconds);
-  $('kv-average').textContent = duration(h.averageSeconds);
-  $('kv-optedout').textContent = fmt.format(h.optedOut);
+  setField('kv-uptime', duration(u.seconds));
+  setField('kv-started', new Date(u.startedAt).toISOString().slice(0, 16).replace('T', ' ') + 'Z');
+  setField('kv-longest', h.longestSeconds ? duration(h.longestSeconds) : null, 'no huddles yet');
+  setField('kv-average', h.averageSeconds ? duration(h.averageSeconds) : null, 'no huddles yet');
+  setField('kv-optedout', fmt.format(h.optedOut));
   const stateTag = $('state-tag');
   stateTag.textContent = u.state;
   stateTag.classList.toggle('ok', u.state === 'ok' || u.state === 'operational');
   $('foot-updated').textContent = 'updated ' + new Date(data.generatedAt).toISOString().slice(11, 19) + 'Z';
-  renderBoard(data.leaderboard);
+
+  renderBoard(data.leaderboard, viewer);
   renderOptIn();
   renderChannels(data.channels, data.botChannels.count);
-  renderLog(data.viewer.isOwner ? data.logs : null);
+  renderLog(data.logs, Boolean(viewer && viewer.isOwner));
   renderSparkline(data.leaderboard.slice(0, 12).map((row) => row.points));
-}
 
-/* sign in */
-async function sendCode(){
-  const id = $('slack-id').value.trim();
-  const msg = $('signin-msg');
-  if (!id) { msg.className = 'msg bad'; msg.textContent = 'Enter your Slack member ID first.'; return; }
-  msg.className = 'msg'; msg.textContent = 'Sending…';
-  const response = await fetch(base + '/api/auth/code', {
-    method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ slackUserId: id }),
-  });
-  const body = await response.json().catch(() => ({}));
-  if (!response.ok) { msg.className = 'msg bad'; msg.textContent = body.error || 'Could not send the code.'; return; }
-  msg.className = 'msg ok';
-  msg.textContent = 'Code sent. Check your Slack DM, then enter it below.';
-  $('code-row').classList.remove('hidden');
-  $('slack-code').focus();
+  if (bare) {
+    cold('Nothing here yet', 'Asteria has not seen a huddle, a person, or a channel. Invite it to a channel and this page fills itself in.');
+  }
+  first = false;
 }
-async function verifyCode(){
-  const msg = $('signin-msg');
-  msg.className = 'msg'; msg.textContent = 'Checking…';
-  const response = await fetch(base + '/api/auth/verify', {
-    method: 'POST', headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({ slackUserId: $('slack-id').value.trim(), code: $('slack-code').value.trim() }),
-  });
-  const body = await response.json().catch(() => ({}));
-  if (!response.ok) { msg.className = 'msg bad'; msg.textContent = body.error || 'That did not work.'; return; }
-  msg.className = 'msg ok'; msg.textContent = 'Signed in. Loading your dashboard…';
-  setTimeout(() => location.reload(), 700);
-}
-$('send-code')?.addEventListener('click', sendCode);
-$('verify-code')?.addEventListener('click', verifyCode);
-$('slack-id')?.addEventListener('keydown', (e) => { if (e.key === 'Enter') sendCode(); });
-$('slack-code')?.addEventListener('keydown', (e) => { if (e.key === 'Enter') verifyCode(); });
 
 refresh();
 setInterval(refresh, 5000);

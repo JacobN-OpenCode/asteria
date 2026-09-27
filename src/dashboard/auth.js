@@ -41,18 +41,38 @@ export function createDashboardAuth({ client, store, logger = console, slackClie
    * Slack "Sign in with Slack" (OIDC user token). Needs the app's client id and
    * secret plus the redirect url registered on the app.
    */
-  function slackAuthorizeUrl(req, state) {
+  function slackAuthorizeUrl(req, state, nonce) {
     const redirectUri = `${publicUrl(req)}/auth/slack/callback`;
     const params = new URLSearchParams({
       client_id: slackClientId,
       scope: 'openid profile',
+      // Slack rejects the authorize request outright without this ("response_type
+      // must be \"code\""), and the openid scope additionally forces a nonce that
+      // has to come back in the id_token.
+      response_type: 'code',
       redirect_uri: redirectUri,
       state,
     });
+    if (nonce) {
+      params.set('nonce', nonce);
+    }
     return `https://slack.com/openid/connect/authorize?${params}`;
   }
 
-  async function exchangeSlackCode(req, code) {
+  /** Claims out of a JWT we got straight from Slack over TLS. No signature re-check here. */
+  function idTokenClaims(idToken) {
+    const segment = String(idToken || '').split('.')[1];
+    if (!segment) {
+      return null;
+    }
+    try {
+      return JSON.parse(Buffer.from(segment, 'base64url').toString('utf8'));
+    } catch {
+      return null;
+    }
+  }
+
+  async function exchangeSlackCode(req, code, expectedNonce) {
     const redirectUri = `${publicUrl(req)}/auth/slack/callback`;
     const response = await fetch('https://slack.com/api/openid.connect.token', {
       method: 'POST',
@@ -67,6 +87,15 @@ export function createDashboardAuth({ client, store, logger = console, slackClie
     const body = await response.json().catch(() => ({}));
     if (!body.access_token) {
       throw new Error(body.error || 'openid.connect.token failed');
+    }
+    if (expectedNonce) {
+      const claims = idTokenClaims(body.id_token);
+      if (!claims || claims.nonce !== expectedNonce) {
+        throw new Error('id_token nonce did not match the authorize request');
+      }
+      if (claims.aud && claims.aud !== slackClientId) {
+        throw new Error('id_token audience did not match this app');
+      }
     }
     const userResponse = await fetch('https://slack.com/api/user.info', {
       headers: { authorization: `Bearer ${body.access_token}` },

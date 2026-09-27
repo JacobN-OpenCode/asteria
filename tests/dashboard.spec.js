@@ -151,7 +151,7 @@ describe('dashboard server', () => {
       assert.match(page.headers.get('content-type'), /text\/html/);
       const html = await page.text();
       assert.match(html, /Asteria/);
-      assert.match(html, /--accent:#86efac/, 'dark theme with the light green accent');
+      assert.match(html, /--accent:#238636/, 'dark theme with the cachet green accent');
       assert.match(html, /color-scheme:dark/);
 
       const health = await fetch(`${harness.base}/health`);
@@ -342,12 +342,12 @@ describe('dashboard server', () => {
     }
   });
 
-  it('sends /login to the sign in panel when the app has no oauth client', async () => {
+  it('sends /login home when the app has no oauth client', async () => {
     const harness = await startDashboard();
     try {
       const response = await fetch(`${harness.base}/login`, { redirect: 'manual' });
       assert.equal(response.status, 302);
-      assert.match(response.headers.get('location'), /#signin-panel$/);
+      assert.equal(response.headers.get('location'), '/');
     } finally {
       await harness.stop();
     }
@@ -429,8 +429,21 @@ describe('dashboard markup', () => {
   it('escapes anything user controlled and ships the dark theme tokens', () => {
     const html = renderDashboardHtml({ signedIn: true, role: 'owner', oauthConfigured: true });
     assert.match(html, /color-scheme:dark/);
-    assert.match(html, /--bg:#0a0b0a/);
+    assert.match(html, /--bg:#0d1117/);
     assert.match(html, /class="who" id="who">owner<\/span>/);
     assert.doesNotMatch(html, /<script src=/, 'no external scripts');
+  });
+
+  it('keeps em dashes out of the interface and hides the member id sign in', () => {
+    const html = renderDashboardHtml({ signedIn: false, oauthConfigured: true });
+    assert.doesNotMatch(html, /\u2014/, 'no em dashes anywhere in the markup or script');
+    assert.doesNotMatch(html, /signin-panel|slack-id|signin-msg/, 'no member id sign in');
+    assert.match(html, /Sign in with Slack/, 'slack sign in stays in the top bar');
+  });
+
+  it('skeletons stand in for data while the first payload lands', () => {
+    const html = renderDashboardHtml({ signedIn: false, oauthConfigured: true });
+    assert.match(html, /class="skel/, 'loading placeholders are skeletons, not dashes');
+    assert.match(html, /id="board"><li class="none-slot">/);
   });
 });
