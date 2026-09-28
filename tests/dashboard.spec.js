@@ -811,15 +811,21 @@ describe('dashboard markup', () => {
     t.after(() => {
       globalThis.fetch = originalFetch;
     });
+    // A real id_token carries the member id in `sub`. Only the payload is
+    // decoded here, never the signature, so a stand-in segment is enough.
+    const idToken = ['header', Buffer.from(JSON.stringify({ sub: 'U0AEYDUCLKF' })).toString('base64url')].join('.');
     globalThis.fetch = async (url, options = {}) => {
       seen.push({ url: String(url), options });
       if (String(url).includes('openid.connect.token')) {
-        return new Response(JSON.stringify({ ok: true, access_token: 'xoxp-test', id_token: '' }), {
+        return new Response(JSON.stringify({ ok: true, access_token: 'xoxp-test', id_token: idToken }), {
           status: 200,
           headers: { 'content-type': 'application/json' },
         });
       }
-      return new Response(JSON.stringify({ ok: true, user: { id: 'U0AEYDUCLKF', name: 'jacob' } }), {
+      // users.info is the one call that fails: the authorize request only asks
+      // for `openid profile`, so this token carries no users:read and Slack
+      // refuses the call. Sign in has to survive that anyway.
+      return new Response(JSON.stringify({ ok: false, error: 'missing_scope' }), {
         status: 200,
         headers: { 'content-type': 'application/json' },
       });
@@ -827,12 +833,11 @@ describe('dashboard markup', () => {
 
     // The dashboard sits behind Caddy, so the proto arrives as a forwarded
     // header; the redirect uri has to be rebuilt from that on every request.
-    await assert.doesNotReject(
-      auth.exchangeSlackCode(
-        { headers: { host: 'asteria.navaratne.uk', 'x-forwarded-proto': 'https' }, socket: {} },
-        'code-123',
-      ),
+    const profile = await auth.exchangeSlackCode(
+      { headers: { host: 'asteria.navaratne.uk', 'x-forwarded-proto': 'https' }, socket: {} },
+      'code-123',
     );
+    assert.equal(profile.id, 'U0AEYDUCLKF', 'the member id comes from the id_token');
     const tokenCall = seen.find((call) => call.url.includes('openid.connect.token'));
     assert.ok(tokenCall, 'the token endpoint was called');
     assert.equal(
@@ -848,6 +853,145 @@ describe('dashboard markup', () => {
     assert.equal(fields.redirect_uri, 'https://asteria.navaratne.uk/auth/slack/callback');
     assert.equal(fields.client_id, '123.456');
     assert.equal(fields.client_secret, 'secret');
+    store.close();
+  });
+});
+
+describe('dashboard scoping and channel owners', () => {
+  function seedHuddle(store, callId, channelId, startedAgoSeconds, durationSeconds) {
+    const startedAt = Math.floor(Date.now() / 1000) - startedAgoSeconds;
+    store.upsertHuddle({
+      callId,
+      channelId,
+      createdBy: 'U1',
+      startedAt,
+      endedAt: startedAt + durationSeconds,
+      participantHistory: ['U1'],
+      threadRootTs: '170000.000000',
+    });
+    store.setHuddleStatus(callId, 'ended', startedAt + durationSeconds);
+    store.upsertHuddleMember({
+      callId,
+      userId: 'U1',
+      firstSeenAt: startedAt,
+      lastSeenAt: startedAt + durationSeconds,
+      isIn: false,
+    });
+  }
+
+  it('counts only channels the bot is actually in', async () => {
+    const store = await createTestStore();
+    // Two huddles in channels the bot can see, one in a channel it cannot. The
+    // third could never have scored, so counting it inflates the homepage.
+    seedHuddle(store, 'Rin1', 'Cbot', 3600, 600);
+    seedHuddle(store, 'Rin2', 'Cbot', 7200, 300);
+    seedHuddle(store, 'Rout', 'Celsewhere', 3600, 900);
+    store.upsertHuddleChannel({ channelId: 'Cbot', name: 'bot' });
+    store.upsertHuddleChannel({ channelId: 'Celsewhere', name: 'elsewhere' });
+
+    const stats = await buildDashboardStats({
+      store,
+      botChannels: { list: async () => ['Cbot'] },
+      permissions: { role: ROLES.OWNER, isOwner: true, isManager: true, managedChannelIds: null },
+      cachet: null,
+      startedAt: Date.now() - 60000,
+    });
+
+    assert.equal(stats.huddles.ended, 2, 'the out-of-bot huddle is not counted');
+    assert.deepEqual(
+      stats.channels.map((channel) => channel.id),
+      ['Cbot'],
+      'and its channel is not offered as a card',
+    );
+    assert.equal(stats.channels[0].inBot, true);
+    store.close();
+  });
+
+  it('adopts the Flaron creator as the first owner, then leaves App Home edits alone', async () => {
+    const store = await createTestStore();
+    store.upsertHuddleChannel({ channelId: 'Cjlog', name: 'j-log' });
+    // Flaron already makes the channel creator its owner, so that is who the
+    // website should show as the CM without anyone touching App Home.
+    const flaron = {
+      list: async () => ({
+        Cjlog: {
+          channelId: 'Cjlog',
+          name: 'j-log',
+          members: 27,
+          managers: ['U0AEYDUCLKF'],
+          creator: 'U0AEYDUCLKF',
+        },
+      }),
+    };
+
+    const first = await buildDashboardStats({
+      store,
+      botChannels: { list: async () => ['Cjlog'] },
+      permissions: { role: ROLES.OWNER, isOwner: true, isManager: true, managedChannelIds: null },
+      cachet: null,
+      flaron,
+      startedAt: Date.now() - 60000,
+    });
+
+    assert.deepEqual(
+      first.channels[0].managers.map((manager) => manager.userId),
+      ['U0AEYDUCLKF'],
+      'the creator is the channel manager on the site',
+    );
+    assert.deepEqual(
+      JSON.parse(store.getHuddleChannel('Cjlog').owner_ids),
+      ['U0AEYDUCLKF'],
+      'and it is written down, so App Home shows the same thing',
+    );
+    assert.equal(first.leaderboard.length >= 0, true);
+
+    // Jacob then swaps the owner list over in App Home. That is the source of
+    // truth from here, so a later Flaron sync must not drag the old owner back.
+    store.upsertHuddleChannel({ channelId: 'Cjlog', name: 'j-log', ownerIds: ['UOTHER'] });
+    seedHuddle(store, 'Rjlog', 'Cjlog', 3600, 600);
+    store.awardHuddlePoints('UOTHER', 40, 'Cjlog');
+    const second = await buildDashboardStats({
+      store,
+      botChannels: { list: async () => ['Cjlog'] },
+      permissions: { role: ROLES.OWNER, isOwner: true, isManager: true, managedChannelIds: null },
+      cachet: null,
+      flaron,
+      startedAt: Date.now() - 60000,
+    });
+
+    assert.deepEqual(
+      second.channels[0].managers.map((manager) => manager.userId),
+      ['UOTHER'],
+      'the hand edited owner list wins over the Flaron creator',
+    );
+    assert.equal(
+      second.leaderboard.some((row) => row.userId === 'UOTHER' && row.channelManager),
+      true,
+      'and the new owner gets a CM tag on the board',
+    );
+    store.close();
+  });
+});
+
+describe('bot delivered sign in link', () => {
+  it('signs someone in from a link the bot DMs, once, and only to them', async () => {
+    const store = await createTestStore();
+    const auth = createDashboardAuth({
+      client: createSlackClientDouble(),
+      store,
+      logger: { warn: mock.fn(), error: mock.fn() },
+    });
+
+    const link = auth.issueMagicLink('U0AEYDUCLKF', 'https://asteria.navaratne.uk/');
+    assert.match(link, /^https:\/\/asteria\.navaratne\.uk\/auth\/magic\?token=/, 'a link, not a bare code');
+
+    const token = new URL(link).searchParams.get('token');
+    const redeemed = auth.consumeMagicLink(token);
+    assert.deepEqual(redeemed, { ok: true, slackUserId: 'U0AEYDUCLKF' });
+
+    assert.equal(auth.consumeMagicLink(token).ok, false, 'a link only works once, so a forwarded copy is worthless');
+    assert.equal(auth.consumeMagicLink('').ok, false);
+    assert.equal(auth.consumeMagicLink('nonsense').ok, false);
     store.close();
   });
 });

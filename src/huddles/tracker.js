@@ -13,6 +13,11 @@ const OPT_OUT_ACTION_ID = 'huddle_opt_out';
 const TRACK_AGAIN_ACTION_ID = 'huddle_track_again';
 const STALE_HUDDLE_SECONDS = 12 * 60 * 60;
 const STALE_SWEEP_INTERVAL_MS = 15 * 60 * 1000;
+// Slack drops huddle leave events, so a huddle that is over often looks like it
+// is still running. Polling quiet huddles once a minute closes them within a
+// minute of the real end rather than up to twelve hours later.
+const RECONCILE_INTERVAL_MS = 60 * 1000;
+const RECONCILE_QUIET_SECONDS = 90;
 
 function parseJsonArray(value) {
   try {
@@ -239,6 +244,10 @@ export function createHuddleTracker({ app, store, client, logger, ownerId = '', 
     if (!store.setHuddleStatus(callId, 'ended', endedAt)) {
       return;
     }
+    // Members are only marked out of a huddle when Slack tells us they left, and
+    // those events go missing. Leaving them flagged keeps the huddle looking
+    // occupied, which is what stopped the old sweep from ever closing it.
+    store.clearHuddleMembers?.(callId);
     if (wasOptedOut) {
       return;
     }
@@ -423,8 +432,77 @@ export function createHuddleTracker({ app, store, client, logger, ownerId = '', 
     const cutoff = nowEpochSeconds() - STALE_HUDDLE_SECONDS;
     const stale = store.listStaleActiveHuddles(cutoff);
     for (const huddle of stale) {
-      if (store.countActiveHuddleMembers(huddle.call_id) === 0) {
-        await finalizeHuddle(huddle.call_id, huddle.started_at + STALE_HUDDLE_SECONDS);
+      if (store.countActiveHuddleMembers(huddle.call_id) !== 0) {
+        continue;
+      }
+      // This is the last resort for huddles older than the stale window, and it
+      // used to record the end as start-plus-twelve-hours, which is how huddles
+      // that genuinely lasted a few minutes ended up displayed as 12h. Ask Slack
+      // for the real end time, and only fall back to the window if it cannot say.
+      const room = await fetchRoomState(huddle);
+      const endedAt = Number(room?.date_end) || 0;
+      await finalizeHuddle(
+        huddle.call_id,
+        endedAt > huddle.started_at ? endedAt : huddle.started_at + STALE_HUDDLE_SECONDS,
+      );
+    }
+  }
+
+  /**
+   * The huddle room object Slack keeps on the thread root, or null.
+   *
+   * `room.date_end` is the only trustworthy record of when a huddle actually
+   * stopped. It is the difference between a huddle that ran 8 minutes and one
+   * that appears to have run 12 hours.
+   */
+  async function fetchRoomState(huddle, slackClient = client) {
+    if (!huddle?.channel_id || !huddle?.thread_root_ts) {
+      return null;
+    }
+    try {
+      const reply = await slackClient.conversations.replies({
+        channel: huddle.channel_id,
+        ts: huddle.thread_root_ts,
+        limit: 1,
+      });
+      return reply?.messages?.[0]?.room || null;
+    } catch (error) {
+      logger.warn?.(`Could not read huddle state for ${huddle.call_id}: ${error.message}`);
+      return null;
+    }
+  }
+
+  /**
+   * Close huddles that ended, using Slack's own end time.
+   *
+   * `user_huddle_changed` is not a reliable signal that a huddle finished. People
+   * leave, Slack drops the event, and the last person out is never announced, so
+   * a huddle could sit "active" for hours. The review prompt then landed long
+   * after everyone had gone, and the duration ran from the start all the way to
+   * whenever the stale sweep finally noticed.
+   *
+   * So ask Slack instead. Only huddles that have gone quiet are checked, which
+   * in practice is a couple of calls a minute rather than one per huddle.
+   */
+  async function reconcileEndedHuddles() {
+    const now = nowEpochSeconds();
+    for (const huddle of store.listActiveHuddles()) {
+      if (!huddle.thread_root_ts || !huddle.channel_id) {
+        continue;
+      }
+      const lastActivity = store.lastHuddleActivityAt(huddle.call_id) || huddle.started_at;
+      if (now - Math.max(lastActivity, huddle.started_at) < RECONCILE_QUIET_SECONDS) {
+        continue;
+      }
+      const room = await fetchRoomState(huddle);
+      if (!room?.date_end) {
+        continue;
+      }
+      // The end time is only ever moved earlier, so a late poll that reads an
+      // older date_end still beats the start-plus-twelve-hours placeholder.
+      const endedAt = Math.min(Number(room.date_end) || 0, now);
+      if (endedAt > huddle.started_at) {
+        await finalizeHuddle(huddle.call_id, endedAt);
       }
     }
   }
@@ -695,20 +773,8 @@ export function createHuddleTracker({ app, store, client, logger, ownerId = '', 
   }
 
   async function isHuddleStillLive(huddle, actionClient) {
-    if (!huddle?.channel_id || !huddle?.thread_root_ts) {
-      return true;
-    }
-    try {
-      const reply = await actionClient.conversations.replies({
-        channel: huddle.channel_id,
-        ts: huddle.thread_root_ts,
-        limit: 1,
-      });
-      const root = reply?.messages?.[0];
-      return !(root?.room?.date_end ?? 0);
-    } catch {
-      return true;
-    }
+    const room = await fetchRoomState(huddle, actionClient);
+    return !room?.date_end;
   }
 
   async function handleTrackAgain({ ack, body, client: actionClient }) {
@@ -851,6 +917,20 @@ export function createHuddleTracker({ app, store, client, logger, ownerId = '', 
     if (!huddle) {
       await answerActionPrivately(actionClient, body, 'Sorry, I could not find that huddle anymore.');
       return;
+    }
+    // The prompt used to sit in the thread of a huddle that had long finished,
+    // because the huddle only closed hours later. If we still have no end time
+    // for it, ask Slack before spending an AI review on a call nobody is in.
+    if (huddle.status === 'active' && !huddle.ended_at) {
+      const stillLive = await isHuddleStillLive(huddle, actionClient);
+      if (stillLive) {
+        await answerActionPrivately(
+          actionClient,
+          body,
+          'That huddle is still going, so hold off on the review for now.',
+        );
+        return;
+      }
     }
     const rules = channelRules(huddle.channel_id || body?.container?.channel_id || '');
     if (!mayTriggerInChannel(rules, body?.user?.id || '')) {
@@ -1061,12 +1141,25 @@ export function createHuddleTracker({ app, store, client, logger, ownerId = '', 
   }, STALE_SWEEP_INTERVAL_MS);
   sweepTimer.unref?.();
 
+  const reconcileTimer = setInterval(() => {
+    void reconcileEndedHuddles().catch((error) => {
+      logger.error('Reconcile ended huddles', error);
+    });
+  }, RECONCILE_INTERVAL_MS);
+  reconcileTimer.unref?.();
+  // Once at startup, so a restart does not leave yesterday's huddles open.
+  void reconcileEndedHuddles().catch((error) => {
+    logger.error('Reconcile ended huddles', error);
+  });
+
   return {
     GENERATE_REVIEW_ACTION_ID,
     OPT_OUT_ACTION_ID,
     TRACK_AGAIN_ACTION_ID,
+    reconcileEndedHuddles,
     stop() {
       clearInterval(sweepTimer);
+      clearInterval(reconcileTimer);
     },
   };
 }

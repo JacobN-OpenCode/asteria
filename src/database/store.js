@@ -1045,6 +1045,47 @@ export async function createStore(databasePath, options = {}) {
       return bindAndFetchAll(database, 'SELECT * FROM huddles ORDER BY started_at DESC');
     },
 
+    /** Huddles the bot still believes are running, oldest first. */
+    listActiveHuddles() {
+      return bindAndFetchAll(
+        database,
+        "SELECT * FROM huddles WHERE status = 'active' AND started_at > 0 ORDER BY started_at ASC",
+      );
+    },
+
+    /**
+     * When we last heard anything about a huddle, as epoch seconds, or 0.
+     *
+     * Used to decide whether a huddle has gone quiet enough to be worth asking
+     * Slack about. A huddle people are still joining and leaving in is never
+     * polled, which keeps the reconciler off Slack almost entirely.
+     */
+    lastHuddleActivityAt(callId) {
+      const row = bindAndFetchOne(
+        database,
+        `
+        SELECT MAX(COALESCE(m.last_seen_at, h.last_seen_at)) AS at
+        FROM huddles h
+        LEFT JOIN huddle_members m ON m.call_id = h.call_id
+        WHERE h.call_id = $call_id
+      `,
+        { $call_id: callId },
+      );
+      const at = (row?.at || '').toString();
+      if (!/^\d{4}-\d{2}-\d{2}/.test(at)) {
+        return 0;
+      }
+      return Math.floor(Date.parse(at.replace(' ', 'T') + 'Z') / 1000);
+    },
+
+    /** Everyone still flagged as in a huddle is not in it any more. */
+    clearHuddleMembers(callId) {
+      bindAndRun(database, 'UPDATE huddle_members SET is_in = 0 WHERE call_id = $call_id AND is_in = 1', {
+        $call_id: callId,
+      });
+      persist();
+    },
+
     upsertHuddle({
       callId,
       channelId = '',
@@ -1539,6 +1580,43 @@ export async function createStore(databasePath, options = {}) {
         },
       );
       persist();
+    },
+
+    /**
+     * Add an owner to a channel that has none yet, and do nothing otherwise.
+     *
+     * This is how the Flaron channel creator becomes the first owner without
+     * letting an automatic write fight the owner list the humans edit in App
+     * Home. Once a channel has any owner, this is a no-op, so adding or
+     * removing owners by hand can never be undone by a later sync.
+     */
+    seedHuddleChannelOwner(channelId, userId) {
+      const id = String(userId || '').trim();
+      if (!channelId || !id) {
+        return false;
+      }
+      const existing = this.getHuddleChannel(channelId);
+      const owners = parseOwnerIds(existing?.owner_ids);
+      if (owners.length > 0) {
+        return false;
+      }
+      bindAndRun(
+        database,
+        `
+        INSERT INTO huddle_channels (channel_id, owner_ids, updated_at)
+        VALUES ($channel_id, $owner_ids, CURRENT_TIMESTAMP)
+        ON CONFLICT(channel_id) DO UPDATE SET
+          owner_ids = excluded.owner_ids,
+          updated_at = CURRENT_TIMESTAMP
+        WHERE huddle_channels.owner_ids = '[]'
+      `,
+        {
+          $channel_id: channelId,
+          $owner_ids: JSON.stringify([id]),
+        },
+      );
+      persist();
+      return true;
     },
 
     setHuddleChannelFlag(channelId, field, value) {

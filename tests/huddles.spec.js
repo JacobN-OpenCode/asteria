@@ -1885,3 +1885,106 @@ describe('huddle channel configuration', () => {
     );
   });
 });
+
+describe('huddle reconciliation', () => {
+  // Slack drops `user_huddle_changed` leave events, so a huddle that finished
+  // would sit "active" until the twelve hour stale sweep, which then recorded
+  // the end as start-plus-twelve-hours. That is what put a review prompt hours
+  // late and made short huddles read as 12h. The reconciler asks Slack instead.
+  it('closes a huddle that went quiet, using the end time Slack reports', async () => {
+    const store = await createTestStore();
+    const client = createBasicClient();
+    const now = Math.floor(Date.now() / 1000);
+    const endedAt = now - 300;
+    client.conversations.replies = mock.fn(async () => ({
+      messages: [{ room: { id: 'Rquiet', date_start: now - 900, date_end: endedAt } }],
+    }));
+    const { tracker } = createTrackerHarness({ store, client, ownerId: 'UOWNER' });
+
+    store.upsertHuddle({
+      callId: 'Rquiet',
+      channelId: 'Crandom',
+      createdBy: 'UOWNER',
+      startedAt: now - 900,
+      threadRootTs: '172000.000000',
+      participantHistory: ['UOWNER'],
+    });
+    store.upsertHuddleMember({
+      callId: 'Rquiet',
+      userId: 'UOWNER',
+      firstSeenAt: now - 900,
+      lastSeenAt: now - 890,
+      isIn: true,
+    });
+
+    await tracker.reconcileEndedHuddles();
+
+    const huddle = store.getHuddle('Rquiet');
+    assert.equal(huddle.status, 'ended');
+    assert.equal(huddle.ended_at, endedAt, 'the real end time, not start-plus-twelve-hours');
+    assert(huddle.ended_at - huddle.started_at < 3600, 'a ten minute huddle does not record a twelve hour one');
+    assert.equal(
+      store.listHuddleMembers('Rquiet').every((member) => !member.is_in),
+      true,
+      'nobody is left flagged as still being in it',
+    );
+    assert.equal(client.chat.postMessage.mock.callCount(), 1, 'the review prompt goes out once, promptly');
+  });
+
+  it('leaves a huddle alone while people are still joining and leaving', async () => {
+    const store = await createTestStore();
+    const client = createBasicClient();
+    client.conversations.replies = mock.fn(async () => ({ messages: [{ room: { date_end: 0 } }] }));
+    const { tracker } = createTrackerHarness({ store, client, ownerId: 'UOWNER' });
+    const now = Math.floor(Date.now() / 1000);
+
+    store.upsertHuddle({
+      callId: 'Rbusy',
+      channelId: 'Crandom',
+      createdBy: 'UOWNER',
+      startedAt: now - 60,
+      threadRootTs: '172000.000000',
+      participantHistory: ['UOWNER'],
+    });
+    store.upsertHuddleMember({
+      callId: 'Rbusy',
+      userId: 'UOWNER',
+      firstSeenAt: now - 60,
+      lastSeenAt: now - 5,
+      isIn: true,
+    });
+
+    await tracker.reconcileEndedHuddles();
+
+    assert.equal(store.getHuddle('Rbusy').status, 'active', 'still running');
+    assert.equal(
+      client.conversations.replies.mock.callCount(),
+      0,
+      'a huddle with recent activity is not worth asking Slack about',
+    );
+  });
+
+  it('does not end a huddle when Slack cannot be reached', async () => {
+    const store = await createTestStore();
+    const client = createBasicClient();
+    client.conversations.replies = mock.fn(async () => {
+      throw new Error('ratelimited');
+    });
+    const { tracker } = createTrackerHarness({ store, client, ownerId: 'UOWNER' });
+    const now = Math.floor(Date.now() / 1000);
+
+    store.upsertHuddle({
+      callId: 'Rquiet2',
+      channelId: 'Crandom',
+      createdBy: 'UOWNER',
+      startedAt: now - 900,
+      threadRootTs: '172000.000000',
+      participantHistory: ['UOWNER'],
+    });
+
+    await tracker.reconcileEndedHuddles();
+
+    assert.equal(store.getHuddle('Rquiet2').status, 'active', 'a failed lookup is not an end');
+    assert.equal(client.chat.postMessage.mock.callCount(), 0, 'and prompts nobody');
+  });
+});

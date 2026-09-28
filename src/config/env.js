@@ -27,6 +27,8 @@ export function loadEnvironment() {
     slackSigningSecret: requireValue('SLACK_SIGNING_SECRET'),
     personalChannelOwnerId: requireValue('PERSONAL_CHANNEL_OWNER_ID'),
     personalChannelId: requireValue('PERSONAL_CHANNEL_ID'),
+    // Where the dashboard lives, used to build sign in links the bot DMs out.
+    publicUrl: (process.env.PUBLIC_URL || process.env.ASTERIA_PUBLIC_URL || '').replace(/\/+$/, ''),
     hackClubAiKey: requireValue('HACKCLUB_AI_KEY'),
     hackClubAiModel: process.env.HACKCLUB_AI_MODEL ?? 'qwen/qwen3-32b',
     hackClubAiBaseUrl: process.env.HACKCLUB_AI_BASE_URL ?? 'https://ai.hackclub.com/proxy/v1',

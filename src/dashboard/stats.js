@@ -21,9 +21,13 @@ export async function buildDashboardStats({
   const isManager = permissions.role === ROLES.MANAGER;
   const channelIds = await botChannels.list();
   const now = Date.now();
+  // Every number, card and huddle on the dashboard comes from channels the bot is
+  // actually in. A channel it cannot see could not have tracked a huddle, so
+  // counting it would inflate the aggregates with data that can never exist.
+  const botChannelSet = new Set(channelIds);
 
-  const allHuddles = store.listHuddles();
-  const channels = store.listTrackedHuddleChannels();
+  const allHuddles = store.listHuddles().filter((h) => botChannelSet.has(h.channel_id));
+  const channels = store.listTrackedHuddleChannels().filter((c) => botChannelSet.has(c.channel_id));
   const visibleHuddles =
     isOwner || !isManager ? allHuddles : allHuddles.filter((h) => permissions.managedChannelIds.includes(h.channel_id));
 
@@ -103,7 +107,23 @@ export async function buildDashboardStats({
   // withProfiles, which drops anyone who opted out of the board; a manager is
   // named by Flaron as running a channel, which is not the same as being ranked,
   // so they are looked up directly.
-  const managerIds = [...new Set(Object.values(flaronRecords).flatMap((record) => record.managers || []))];
+  //
+  // The owner list lives in `huddle_channels.owner_ids` and is the single source
+  // of truth shared with the App Home settings block, so a CM added or removed
+  // there shows up here unchanged. Flaron only seeds a channel that has no
+  // owners at all, with the creator Flaron already made the owner of, and
+  // `seedHuddleChannelOwner` is a no-op once a channel has an owner, so a later
+  // sync can never undo a hand edit.
+  if (typeof store.seedHuddleChannelOwner === 'function') {
+    for (const channel of channels) {
+      const record = flaronRecords[channel.channel_id];
+      const seedId = record?.creator || record?.managers?.[0] || '';
+      if (seedId && store.seedHuddleChannelOwner(channel.channel_id, seedId)) {
+        channel.owner_ids = JSON.stringify([seedId]);
+      }
+    }
+  }
+  const managerIds = [...new Set(channels.flatMap((channel) => parseJsonArray(channel.owner_ids)))];
   const managerProfiles = cachet && managerIds.length ? await cachet.list(managerIds) : {};
   const managerSet = new Set(managerIds);
 
@@ -132,7 +152,7 @@ export async function buildDashboardStats({
           visibleHuddles.filter((huddle) => huddle.channel_id === channel.channel_id),
           now,
         ),
-        managers: (record?.managers || [])
+        managers: parseJsonArray(channel.owner_ids)
           .map((userId) => {
             const profile = managerProfiles[userId] || {};
             const onBoard = leaderboard.find((row) => row.userId === userId);

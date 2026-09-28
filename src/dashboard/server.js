@@ -147,10 +147,12 @@ export function createDashboardServer({ store, client, botChannels, logger = con
       const state = auth.randomState();
       const nonce = auth.randomState();
       const cookieAttrs = `Path=/; HttpOnly; SameSite=Lax; Max-Age=600${isSecure(req) ? '; Secure' : ''}`;
-      const cookie = `asteria_oauth_state=${state}; ${cookieAttrs}; asteria_oauth_nonce=${nonce}; ${cookieAttrs}`;
       res.writeHead(302, {
         location: auth.slackAuthorizeUrl(req, state, nonce),
-        'set-cookie': cookie,
+        // Two cookies, so they have to be an array. Joining them into one header
+        // with "; " is parsed inconsistently and silently dropped the nonce, which
+        // turned the nonce check in the callback into a no-op.
+        'set-cookie': [`asteria_oauth_state=${state}; ${cookieAttrs}`, `asteria_oauth_nonce=${nonce}; ${cookieAttrs}`],
         'cache-control': 'no-store',
       });
       res.end();
@@ -177,10 +179,10 @@ export function createDashboardServer({ store, client, botChannels, logger = con
         res.writeHead(302, {
           location: '/',
           'set-cookie': [
-            `${sessionCookie(token, req)}`,
+            sessionCookie(token, req),
             'asteria_oauth_state=; Path=/; Max-Age=0',
             'asteria_oauth_nonce=; Path=/; Max-Age=0',
-          ].join('; '),
+          ],
           'cache-control': 'no-store',
         });
         res.end();
@@ -188,6 +190,30 @@ export function createDashboardServer({ store, client, botChannels, logger = con
         logger.warn?.('[dashboard] Slack sign-in failed', error.message);
         redirect(res, '/?error=slack');
       }
+      return;
+    }
+
+    if (route === '/auth/magic') {
+      const result = auth.consumeMagicLink(url.searchParams.get('token') || '');
+      if (!result.ok) {
+        res.writeHead(400, { 'content-type': 'text/plain; charset=utf-8', 'cache-control': 'no-store' });
+        res.end(result.error);
+        return;
+      }
+      const permissions = resolvePermissions({ store, slackUserId: result.slackUserId });
+      const token = auth.completeLogin({
+        slackUserId: result.slackUserId,
+        displayName: store.getDashboardUser?.(result.slackUserId)?.display_name || '',
+        permissions,
+      });
+      // Straight into the dashboard with the session already set, which is the
+      // whole point of a link: nothing to copy, nothing to type.
+      res.writeHead(302, {
+        location: '/',
+        'set-cookie': [sessionCookie(token, req)],
+        'cache-control': 'no-store',
+      });
+      res.end();
       return;
     }
 
@@ -307,6 +333,10 @@ export function createDashboardServer({ store, client, botChannels, logger = con
 
   return {
     server,
+    // Exposed so the bot can mint sign in links for DMs without reaching into
+    // module internals. Callers only get what the public sign in path uses.
+    auth,
+    publicUrl: (req) => auth.publicUrl(req),
     listen(port, host = '0.0.0.0') {
       return new Promise((resolve) => {
         server.listen(port, host, () => {

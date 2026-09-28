@@ -5,6 +5,7 @@ import { loadEnvironment } from './config/env.js';
 import { createDashboardServer } from './dashboard/server.js';
 import { backfillChannelPoints } from './database/backfill-channel-points.js';
 import { createStore } from './database/store.js';
+import { registerDmDashboardLink } from './dm/dashboard-link.js';
 import { registerDmDeleteByLink } from './dm/delete-by-link.js';
 import { createHuddleTracker } from './huddles/tracker.js';
 import { createScheduler } from './scheduler.js';
@@ -164,6 +165,18 @@ export async function createAsteriaRuntime() {
     client: app.client,
     botChannels,
     logger,
+  });
+
+  // "dashboard" in a DM gets a one-time sign in link back in the same DM. Slack's
+  // OAuth button is the front door, but it needs app config applied by hand, so
+  // this is the way in that cannot be left half configured.
+  registerDmDashboardLink({
+    app,
+    client: app.client,
+    auth: dashboardServer.auth,
+    store,
+    logger,
+    baseUrl: environment.publicUrl,
   });
 
   return {
