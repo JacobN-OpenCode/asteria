@@ -13,6 +13,20 @@
 
 const TRIGGERS = new Set(['dashboard', 'signin', 'sign in', 'login', 'log in', 'website', 'site']);
 
+// Phrases that are only ever a request for the link. Kept separate from the
+// triggers above so that a message merely *about* the dashboard, such as "the
+// dashboard looks broken", does not get answered with a sign in link.
+const REQUESTS = [
+  'asteria dashboard',
+  'sign me in',
+  'let me in',
+  'send me the link',
+  'magic link',
+  'one-time code',
+  'where is the site',
+  'where is the dashboard',
+];
+
 function isDirectMessage(payload) {
   const message = payload.message ?? payload.event ?? {};
   return message.channel_type === 'im' || String(message.channel || '').startsWith('D');
@@ -27,7 +41,10 @@ function requestedLink(text) {
   if (!normalized) {
     return false;
   }
-  return [...TRIGGERS].some((trigger) => normalized === trigger || normalized.startsWith(`${trigger} `));
+  if ([...TRIGGERS].some((trigger) => normalized === trigger || normalized.startsWith(`${trigger} `))) {
+    return true;
+  }
+  return REQUESTS.some((phrase) => normalized.includes(phrase));
 }
 
 export function registerDmDashboardLink({ app, client, auth, store, logger, baseUrl }) {
