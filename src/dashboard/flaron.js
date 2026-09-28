@@ -6,14 +6,18 @@ const REQUEST_TIMEOUT_MS = 4000;
  * Flaron is Hack Club's Slack data cache and the source for the things Slack's
  * API will not tell us cheaply: how big a channel is and who runs it.
  *
- *   GET /cid/C012ABCDEF -> { id, name, counts: { total, bots }, managers: [U…] }
+ *   GET /channel/C012ABCDEF -> { id, name, counts: { total, bots }, managers: [U…], creator: U… }
+ *
+ * `/channel` is used rather than `/cid` because only the long form carries
+ * `creator`, which is the account Flaron automatically makes the owner of a
+ * channel. `/cid` is the short form and stays the documented fallback.
  *
  * It answers without authentication. It also refuses to describe private
  * channels (`{"error": "private"}`), which is a normal answer rather than a
  * failure: those channels fall back to Slack for a size and say so.
  */
 export function flaronChannelUrl(channelId) {
-  return `${FLARON_BASE}/cid/${encodeURIComponent(channelId)}`;
+  return `${FLARON_BASE}/channel/${encodeURIComponent(channelId)}`;
 }
 
 export function createFlaronDirectory({
@@ -33,33 +37,39 @@ export function createFlaronDirectory({
     const timer = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
     let value = null;
     try {
-      const response = await fetchImpl(`${baseUrl}/cid/${encodeURIComponent(channelId)}`, {
-        headers: { accept: 'application/json' },
-        signal: controller.signal,
-      });
-      const body = response.ok ? await response.json().catch(() => ({})) : {};
-      // A private or unknown channel comes back as an error object with HTTP 200,
-      // so check the body rather than the status alone.
-      if (!body?.error && body?.id) {
-        const total = Number(body?.counts?.total);
-        const bots = Number(body?.counts?.bots);
-        value = {
-          channelId: body.id,
-          name: body.name || '',
-          members: Number.isFinite(total) ? total : null,
-          bots: Number.isFinite(bots) ? bots : null,
-          humans: Number.isFinite(total) && Number.isFinite(bots) ? Math.max(0, total - bots) : null,
-          managers: Array.isArray(body.managers) ? body.managers.filter((id) => typeof id === 'string' && id) : [],
-          creator: body.creator || '',
-          topic: body.topic || '',
-          description: body.description || '',
-          archived: !!body.is_archived,
-        };
-      } else if (body?.error) {
-        logger.info?.(`[flaron] ${channelId} -> ${body.error}`);
+      for (const path of ['/channel/', '/cid/']) {
+        try {
+          const response = await fetchImpl(`${baseUrl}${path}${encodeURIComponent(channelId)}`, {
+            headers: { accept: 'application/json' },
+            signal: controller.signal,
+          });
+          const body = response.ok ? await response.json().catch(() => ({})) : {};
+          // A private or unknown channel comes back as an error object with HTTP 200,
+          // so check the body rather than the status alone.
+          if (!body?.error && body?.id) {
+            const total = Number(body?.counts?.total);
+            const bots = Number(body?.counts?.bots);
+            value = {
+              channelId: body.id,
+              name: body.name || '',
+              members: Number.isFinite(total) ? total : null,
+              bots: Number.isFinite(bots) ? bots : null,
+              humans: Number.isFinite(total) && Number.isFinite(bots) ? Math.max(0, total - bots) : null,
+              managers: Array.isArray(body.managers) ? body.managers.filter((id) => typeof id === 'string' && id) : [],
+              creator: body.creator || '',
+              topic: body.topic || '',
+              description: body.description || '',
+              archived: !!body.is_archived,
+            };
+            break;
+          }
+          if (body?.error) {
+            logger.info?.(`[flaron] ${channelId} -> ${body.error}`);
+          }
+        } catch (error) {
+          logger.warn?.(`[flaron] ${channelId} lookup failed: ${error.message}`);
+        }
       }
-    } catch (error) {
-      logger.warn?.(`[flaron] ${channelId} lookup failed: ${error.message}`);
     } finally {
       clearTimeout(timer);
     }

@@ -58,7 +58,6 @@ export function createDashboardAuth({ client, store, logger = console, slackClie
     }
     return `https://slack.com/openid/connect/authorize?${params}`;
   }
-
   /** Claims out of a JWT we got straight from Slack over TLS. No signature re-check here. */
   function idTokenClaims(idToken) {
     const segment = String(idToken || '').split('.')[1];
@@ -91,8 +90,8 @@ export function createDashboardAuth({ client, store, logger = console, slackClie
     if (!body.access_token) {
       throw new Error(body.error || 'openid.connect.token failed');
     }
+    const claims = idTokenClaims(body.id_token);
     if (expectedNonce) {
-      const claims = idTokenClaims(body.id_token);
       if (!claims || claims.nonce !== expectedNonce) {
         throw new Error('id_token nonce did not match the authorize request');
       }
@@ -100,14 +99,30 @@ export function createDashboardAuth({ client, store, logger = console, slackClie
         throw new Error('id_token audience did not match this app');
       }
     }
-    const userResponse = await fetch('https://slack.com/api/user.info', {
-      headers: { authorization: `Bearer ${body.access_token}` },
-    });
-    const user = await userResponse.json();
-    if (!user.ok || !user.user?.id) {
-      throw new Error(user.error || 'user.info failed');
+    // The user id comes from the id_token, which the `openid` scope already
+    // guarantees. This used to come from user.info, but the authorize request
+    // only asks for `openid profile`, so the exchanged token carries no
+    // users:read and user.info is refused, which failed the whole sign in.
+    // Depending on user.info for a nicety like the display name is not worth
+    // being unable to sign in.
+    const sub = claims?.sub || '';
+    if (!/^[UW][A-Z0-9]{7,}$/.test(String(sub))) {
+      throw new Error('id_token did not carry a Slack member id');
     }
-    return user.user;
+    // Best effort, and allowed to fail: without users:read it always does.
+    let profile = { id: sub };
+    try {
+      const userResponse = await fetch('https://slack.com/api/users.info', {
+        headers: { authorization: `Bearer ${body.access_token}` },
+      });
+      const user = await userResponse.json();
+      if (user.ok && user.user?.id) {
+        profile = user.user;
+      }
+    } catch {
+      // Sign in has already succeeded on the id_token; a missing name is cosmetic.
+    }
+    return profile;
   }
 
   /**
@@ -174,6 +189,46 @@ export function createDashboardAuth({ client, store, logger = console, slackClie
     return { ok: true };
   }
 
+  /**
+   * A one-time sign-in link the bot can DM, as an alternative to reading a code
+   * off a phone screen and typing it back in.
+   *
+   * Opening the link proves the same thing the code does, that the person
+   * clicking it could read the bot's DM, and it lands straight on a signed in
+   * session, so there is nothing to copy and no form to fill in.
+   */
+  function issueMagicLink(slackUserId, baseUrl) {
+    if (!/^[UW][A-Z0-9]{7,}$/.test(String(slackUserId || ''))) {
+      throw new UserFacingError('That does not look like a Slack member ID.');
+    }
+    const token = randomToken(24);
+    codes.set(slackUserId, { code: '', magicToken: token, createdAt: Date.now() });
+    return `${String(baseUrl || '').replace(/\/+$/, '')}/auth/magic?token=${encodeURIComponent(token)}`;
+  }
+
+  /**
+   * Redeem a magic link. Single use and time limited, and it answers with the
+   * member id it was issued for rather than a boolean, because that is what the
+   * caller needs to build the session.
+   */
+  function consumeMagicLink(token) {
+    const wanted = String(token || '');
+    if (!wanted) {
+      return { ok: false, error: 'That link is not valid.' };
+    }
+    for (const [slackUserId, pending] of codes) {
+      if (pending.magicToken !== wanted) {
+        continue;
+      }
+      codes.delete(slackUserId);
+      if (Date.now() - pending.createdAt > CODE_TTL_MS) {
+        return { ok: false, error: 'That link has expired. Ask the bot for a new one.' };
+      }
+      return { ok: true, slackUserId };
+    }
+    return { ok: false, error: 'That link is not valid or has already been used.' };
+  }
+
   /** Creates the session row and returns the cookie value to hand back. */
   function completeLogin({ slackUserId, displayName, permissions }) {
     const token = randomToken();
@@ -198,6 +253,8 @@ export function createDashboardAuth({ client, store, logger = console, slackClie
     exchangeSlackCode,
     startDmVerification,
     verifyDmCode,
+    issueMagicLink,
+    consumeMagicLink,
     completeLogin,
     sessionFromToken,
     randomState: () => randomToken(16),
