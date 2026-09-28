@@ -4,6 +4,7 @@ import { createChannelPermissions } from './app-home/permissions.js';
 import { loadEnvironment } from './config/env.js';
 import { createDashboardServer } from './dashboard/server.js';
 import { backfillChannelPoints } from './database/backfill-channel-points.js';
+import { repairPlaceholderDurations } from './database/repair-placeholder-durations.js';
 import { createStore } from './database/store.js';
 import { registerDmDashboardLink } from './dm/dashboard-link.js';
 import { registerDmDeleteByLink } from './dm/delete-by-link.js';
@@ -71,6 +72,18 @@ export async function createAsteriaRuntime() {
     backfillChannelPoints(store, { logger });
   } catch (error) {
     logger.error(`Could not attribute historical huddle points: ${error?.message || error}`);
+  }
+
+  // The old stale sweep ended a huddle at start-plus-twelve-hours whenever it
+  // gave up waiting for a leave event, so a great many stored durations are that
+  // placeholder rather than a measurement. It runs here, inside the bot process,
+  // because the database lives in memory and a second process opening the file
+  // would overwrite live data. Afterwards it is a no-op, so this costs one
+  // indexed query per boot.
+  try {
+    repairPlaceholderDurations(store, { logger });
+  } catch (error) {
+    logger.error(`Could not repair placeholder huddle durations: ${error?.message || error}`);
   }
 
   createHomeHandlers({
