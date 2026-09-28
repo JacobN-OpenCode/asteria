@@ -995,3 +995,42 @@ describe('bot delivered sign in link', () => {
     store.close();
   });
 });
+
+describe('placeholder duration repair', () => {
+  it('rewrites huddles left at the 12h placeholder and leaves real ones alone', async () => {
+    const store = await createTestStore();
+    const startedAt = 1700000000;
+    // The sweep gave up on this one and wrote start-plus-twelve-hours.
+    store.upsertHuddle({ callId: 'Rfake', channelId: 'C1', startedAt, endedAt: startedAt + 43200 });
+    store.setHuddleStatus('Rfake', 'ended', startedAt + 43200);
+    store.upsertHuddleMember({
+      callId: 'Rfake',
+      userId: 'U1',
+      firstSeenAt: startedAt,
+      lastSeenAt: startedAt + 540,
+      isIn: false,
+    });
+    // This one ended normally, 10 minutes in.
+    store.upsertHuddle({ callId: 'Rreal', channelId: 'C1', startedAt, endedAt: startedAt + 600 });
+    store.setHuddleStatus('Rreal', 'ended', startedAt + 600);
+    store.upsertHuddleMember({
+      callId: 'Rreal',
+      userId: 'U1',
+      firstSeenAt: startedAt,
+      lastSeenAt: startedAt + 600,
+      isIn: false,
+    });
+
+    const result = store.repairPlaceholderHuddleEnds();
+
+    assert.equal(result.rows, 1, 'only the placeholder row is touched');
+    assert.equal(
+      store.getHuddle('Rfake').ended_at,
+      startedAt + 540,
+      'closed at the last moment a member was recorded present',
+    );
+    assert.equal(store.getHuddle('Rreal').ended_at, startedAt + 600, 'a real duration is left alone');
+    assert.equal(store.repairPlaceholderHuddleEnds().rows, 0, 'safe to run again');
+    store.close();
+  });
+});
