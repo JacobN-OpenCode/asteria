@@ -48,6 +48,31 @@ function toBooleanInteger(value) {
   return value ? 1 : 0;
 }
 
+/**
+ * Epoch seconds from whatever a timestamp column happens to hold.
+ *
+ * The two huddle tables disagree and both are load bearing: `huddle_members`
+ * is written with epoch seconds from the tracker, while `huddles.last_seen_at`
+ * is filled in by `CURRENT_TIMESTAMP`, which SQLite stores as `YYYY-MM-DD
+ * HH:MM:SS` in UTC. Comparing the two directly in SQL puts every integer before
+ * every string, so a mixed `MAX()` silently returns the wrong column. Read them
+ * separately and normalise here instead.
+ */
+function toEpochSeconds(value) {
+  if (value === null || value === undefined || value === '') {
+    return 0;
+  }
+  if (typeof value === 'number') {
+    return Number.isFinite(value) ? value : 0;
+  }
+  const raw = String(value).trim();
+  if (/^\d+$/.test(raw)) {
+    return Number(raw);
+  }
+  const parsed = Date.parse(raw.includes('T') ? raw : `${raw.replace(' ', 'T')}Z`);
+  return Number.isFinite(parsed) ? Math.floor(parsed / 1000) : 0;
+}
+
 function parseBoolean(value) {
   return value === 1 || value === '1' || value === true;
 }
@@ -1064,18 +1089,14 @@ export async function createStore(databasePath, options = {}) {
       const row = bindAndFetchOne(
         database,
         `
-        SELECT MAX(COALESCE(m.last_seen_at, h.last_seen_at)) AS at
+        SELECT MAX(m.last_seen_at) AS member_at, h.last_seen_at AS huddle_at
         FROM huddles h
         LEFT JOIN huddle_members m ON m.call_id = h.call_id
         WHERE h.call_id = $call_id
       `,
         { $call_id: callId },
       );
-      const at = (row?.at || '').toString();
-      if (!/^\d{4}-\d{2}-\d{2}/.test(at)) {
-        return 0;
-      }
-      return Math.floor(Date.parse(at.replace(' ', 'T') + 'Z') / 1000);
+      return Math.max(toEpochSeconds(row?.member_at), toEpochSeconds(row?.huddle_at));
     },
 
     /** Everyone still flagged as in a huddle is not in it any more. */
@@ -1084,6 +1105,55 @@ export async function createStore(databasePath, options = {}) {
         $call_id: callId,
       });
       persist();
+    },
+
+    /**
+     * Rewrite huddles that were closed at exactly the stale window's length.
+     *
+     * The old sweep gave up on a huddle and wrote `started_at + 12h` as its end,
+     * so the stored duration says nothing about how long the huddle actually
+     * ran. The last time any member was recorded as present bounds it from
+     * above, and that is what these rows are moved to.
+     *
+     * Only rows matching the exact placeholder are touched, so this is safe to
+     * run repeatedly and cannot shorten a huddle that ended normally.
+     */
+    repairPlaceholderHuddleEnds(windowSeconds = 12 * 60 * 60) {
+      const rows = bindAndFetchAll(
+        database,
+        `
+        SELECT h.call_id, h.started_at, MAX(m.last_seen_at) AS last_seen
+        FROM huddles h
+        JOIN huddle_members m ON m.call_id = h.call_id
+        WHERE h.status = 'ended' AND (h.ended_at - h.started_at) = $window
+        GROUP BY h.call_id
+      `,
+        { $window: windowSeconds },
+      );
+      let changed = 0;
+      for (const row of rows) {
+        const endedAt = toEpochSeconds(row.last_seen);
+        // Only accept something inside the window, otherwise the row was closed
+        // for a real reason and the placeholder length is a coincidence.
+        if (!Number.isFinite(endedAt) || endedAt <= row.started_at || endedAt >= row.started_at + windowSeconds) {
+          continue;
+        }
+        bindAndRun(database, "UPDATE huddles SET ended_at = $ended_at WHERE call_id = $call_id AND status = 'ended'", {
+          $ended_at: endedAt,
+          $call_id: row.call_id,
+        });
+        changed += 1;
+      }
+      persist();
+      const durations = bindAndFetchAll(
+        database,
+        "SELECT (ended_at - started_at) AS d FROM huddles WHERE status = 'ended' AND ended_at > started_at ORDER BY d",
+      ).map((row) => Number(row.d));
+      return {
+        rows: changed,
+        medianSeconds: durations[Math.floor(durations.length / 2)] ?? 0,
+        total: durations.length,
+      };
     },
 
     upsertHuddle({
@@ -1095,6 +1165,12 @@ export async function createStore(databasePath, options = {}) {
       endedAt = null,
       threadRootTs = '',
       participantHistory = [],
+      // When Slack last told us about this huddle, as epoch seconds. Defaults to
+      // now, which is right for a row we have just created. It is passed
+      // explicitly when replaying an older huddle_thread message, because
+      // CURRENT_TIMESTAMP would otherwise make a two hour old huddle look like
+      // it was reported on a moment ago and the reconciler would never poll it.
+      lastSeenAt = 0,
     }) {
       const currentHuddle = this.getHuddle(callId);
       const mergedStartedAt =
@@ -1105,7 +1181,7 @@ export async function createStore(databasePath, options = {}) {
         database,
         `
         INSERT INTO huddles (call_id, channel_id, channel_name, created_by, started_at, ended_at, thread_root_ts, participant_json, status, last_seen_at, created_at)
-        VALUES ($call_id, $channel_id, $channel_name, $created_by, $started_at, $ended_at, $thread_root_ts, $participant_json, $status, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+        VALUES ($call_id, $channel_id, $channel_name, $created_by, $started_at, $ended_at, $thread_root_ts, $participant_json, $status, $last_seen_at, CURRENT_TIMESTAMP)
         ON CONFLICT(call_id) DO UPDATE SET
           channel_id = excluded.channel_id,
           channel_name = excluded.channel_name,
@@ -1115,7 +1191,7 @@ export async function createStore(databasePath, options = {}) {
           thread_root_ts = excluded.thread_root_ts,
           participant_json = excluded.participant_json,
           status = excluded.status,
-          last_seen_at = CURRENT_TIMESTAMP
+          last_seen_at = excluded.last_seen_at
       `,
         {
           $call_id: callId,
@@ -1127,6 +1203,7 @@ export async function createStore(databasePath, options = {}) {
           $thread_root_ts: threadRootTs,
           $participant_json: JSON.stringify(participantHistory ?? []),
           $status: mergedStatus,
+          $last_seen_at: lastSeenAt > 0 ? lastSeenAt : Math.floor(Date.now() / 1000),
         },
       );
       persist();

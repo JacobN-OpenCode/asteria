@@ -18,6 +18,10 @@ const STALE_SWEEP_INTERVAL_MS = 15 * 60 * 1000;
 // minute of the real end rather than up to twelve hours later.
 const RECONCILE_INTERVAL_MS = 60 * 1000;
 const RECONCILE_QUIET_SECONDS = 90;
+// A huddle Slack cannot be asked about is only written off after a full hour of
+// silence, which no live huddle reaches without its members showing up in the
+// participant events we listen for.
+const UNVERIFIABLE_QUIET_SECONDS = 60 * 60;
 
 function parseJsonArray(value) {
   try {
@@ -30,6 +34,12 @@ function parseJsonArray(value) {
 
 function nowEpochSeconds() {
   return Math.floor(Date.now() / 1000);
+}
+
+/** Slack message timestamps are `seconds.microseconds` strings. */
+function slackTsToEpochSeconds(ts) {
+  const seconds = Number.parseFloat(String(ts ?? ''));
+  return Number.isFinite(seconds) && seconds > 0 ? Math.floor(seconds) : 0;
 }
 
 const SILENT_NOTICE_COOLDOWN_SECONDS = 60 * 60;
@@ -399,6 +409,9 @@ export function createHuddleTracker({ app, store, client, logger, ownerId = '', 
       endedAt,
       threadRootTs: room.thread_root_ts || message.ts || '',
       participantHistory: room.participant_history || [],
+      // The thread message is Slack telling us about this huddle, so its own
+      // timestamp is when we last heard anything, not the moment we wrote.
+      lastSeenAt: slackTsToEpochSeconds(message.ts) || (endedAt ?? 0),
     });
     if (!rules.tracking) {
       // The channel has tracking off or paused: record the huddle silently so we
@@ -487,10 +500,21 @@ export function createHuddleTracker({ app, store, client, logger, ownerId = '', 
   async function reconcileEndedHuddles() {
     const now = nowEpochSeconds();
     for (const huddle of store.listActiveHuddles()) {
+      const lastActivity = store.lastHuddleActivityAt(huddle.call_id) || huddle.started_at;
       if (!huddle.thread_root_ts || !huddle.channel_id) {
+        // A huddle seen only through a user_huddle_changed event has no channel
+        // and no thread, so there is nothing to ask Slack about and nothing that
+        // can ever tell us when it stopped. Left alone these stayed "active"
+        // indefinitely and counted as running for a day. Once it has been quiet
+        // for a long time, close it at the last moment we actually saw someone.
+        if (now - Math.max(lastActivity, huddle.started_at) >= UNVERIFIABLE_QUIET_SECONDS) {
+          const endedAt = Math.max(lastActivity, huddle.started_at + 1);
+          if (endedAt > huddle.started_at) {
+            await finalizeHuddle(huddle.call_id, endedAt);
+          }
+        }
         continue;
       }
-      const lastActivity = store.lastHuddleActivityAt(huddle.call_id) || huddle.started_at;
       if (now - Math.max(lastActivity, huddle.started_at) < RECONCILE_QUIET_SECONDS) {
         continue;
       }
