@@ -62,6 +62,13 @@ function createBasicClient() {
     auth: {
       test: mock.fn(async () => ({ user_id: 'BOTUSER', bot_id: 'BOT123' })),
     },
+    users: {
+      // Huddle reviews name people instead of mentioning them, which needs a
+      // display name per Slack id.
+      info: mock.fn(async ({ user }) => ({
+        user: { id: user, profile: { display_name: `name-${user}` } },
+      })),
+    },
     chat: {
       postMessage: mock.fn(async () => ({ ts: '111.222' })),
       getPermalink: mock.fn(async (args) => ({
@@ -178,15 +185,56 @@ describe('huddle review stats', () => {
       },
       shortest: { userId: 'U1', text: 'yo', length: 2, ts: '1000.2', permalink: 'https://p2' },
     };
-    const message = formatHuddleReviewMessage(stats, { timezone: 'UTC' });
+    const message = formatHuddleReviewMessage(stats, {
+      timezone: 'UTC',
+      displayNames: { U1: 'Olive', U2: 'Wallace' },
+    });
     assert(message.includes('Huddle review'));
     assert(message.includes('#random'));
-    assert(message.includes('<@U1> — 5m'));
-    assert(message.includes('<@U2> — 1m 40s'));
+    assert(message.includes('Olive — 5m'));
+    assert(message.includes('Wallace — 1m 40s'));
     assert(message.includes('longest in the huddle'));
-    assert(message.includes('34 chars by <@U2>'));
-    assert(message.includes('2 chars by <@U1>'));
+    assert(message.includes('34 chars by Wallace'));
+    assert(message.includes('2 chars by Olive'));
     assert(message.includes('https://p'));
+  });
+
+  it('names people in a review without ever mentioning them', () => {
+    const stats = computeHuddleStats({
+      huddle: {
+        call_id: 'R9',
+        channel_id: 'C1',
+        created_by: 'U1',
+        started_at: 1000,
+        ended_at: 1300,
+        thread_root_ts: '1000.1',
+      },
+      members: [
+        { user_id: 'U1', first_seen_at: 1000, last_seen_at: 1300 },
+        { user_id: 'U2', first_seen_at: 1000, last_seen_at: 1100 },
+      ],
+    });
+    stats.channelName = 'random';
+    stats.messageStats = {
+      longest: { userId: 'U2', text: 'hi', length: 2, ts: '1', permalink: 'https://p' },
+      shortest: { userId: 'U1', text: 'yo', length: 2, ts: '2', permalink: 'https://p2' },
+    };
+
+    // A review is read by whoever asks for it, and everyone on the call is
+    // listed in it. Mentioning them made reading the stats notify the whole
+    // call, so there must be no mention syntax anywhere in the output.
+    const message = formatHuddleReviewMessage(stats, {
+      timezone: 'UTC',
+      displayNames: { U1: 'Olive', U2: 'Wallace' },
+    });
+    assert.equal(message.match(/<@[A-Z0-9]+>/g), null, 'no mentions in a huddle review');
+    assert(!message.includes('@U1') && !message.includes('@U2'), 'not even a bare user id');
+    assert(message.includes('*Started by:* Olive'), 'the host is named in plain text');
+
+    // A name we could not resolve must still not become a ping.
+    const unknown = formatHuddleReviewMessage(stats, { timezone: 'UTC', displayNames: {} });
+    assert.equal(unknown.match(/<@[A-Z0-9]+>/g), null, 'still no mentions when names are missing');
+    assert(unknown.includes('*Started by:* U1'), 'falls back to the raw id instead of a mention');
   });
 
   it('formats durations human-readably', () => {
@@ -430,8 +478,10 @@ describe('huddle tracker integration', () => {
     assert.equal(review.thread_ts, '1000.000000');
     assert(review.text.includes('Huddle review'));
     assert(review.text.includes('#reviews'));
-    assert(review.text.includes('<@UOWNER> — 5m *— longest in the huddle*'));
-    assert(review.text.includes('<@U9> — 1m 40s'));
+    // Named, not mentioned: reading the review must not notify everyone on the call.
+    assert(review.text.includes('name-UOWNER — 5m *— longest in the huddle*'));
+    assert(review.text.includes('name-U9 — 1m 40s'));
+    assert.equal(review.text.match(/<@[A-Z0-9]+>/g), null, 'the review mentions nobody');
     assert(review.text.includes('No huddle chat messages were recorded.'));
 
     tracker.stop();

@@ -8,6 +8,7 @@ import {
 
 const USER_GROUP_CACHE_TTL_MS = 5 * 60 * 1000;
 const OWNER_PROFILE_CACHE_TTL_MS = 5 * 60 * 1000;
+const DISPLAY_NAME_CACHE_TTL_MS = 60 * 60 * 1000;
 
 let cachedUserGroups = [];
 let cachedUserGroupsAt = 0;
@@ -15,6 +16,72 @@ let cachedUserGroupsAt = 0;
 let cachedOwnerIdentity = null;
 let cachedOwnerIdentityAt = 0;
 let cachedOwnerUserId = '';
+
+/**
+ * Slack id -> display name, for the many ids in a huddle review.
+ *
+ * Slack's `display_name` is what people set for themselves and is usually the
+ * friendliest thing to call them. The fallbacks exist because display_name is
+ * often blank and may be restricted from bots.
+ */
+const displayNameCache = new Map();
+
+function pickDisplayName(profile = {}) {
+  return profile.display_name || profile.real_name || profile.real_name_normalized || '';
+}
+
+/**
+ * Resolve display names for a set of Slack ids, keyed by id.
+ *
+ * Used to name people in messages without mentioning them, so reading a huddle
+ * review does not notify everyone who was in the call. Unknown ids are simply
+ * absent from the result: the caller decides how to label them, and a lookup
+ * failure must never fail the message.
+ */
+export async function resolveDisplayNames(client, slackUserIds, { forceRefresh = false } = {}) {
+  const unique = [...new Set(ensureArray(slackUserIds).filter(Boolean))];
+  const now = Date.now();
+  const byId = {};
+
+  const missing = [];
+  for (const id of unique) {
+    const cached = displayNameCache.get(id);
+    if (!forceRefresh && cached && now - cached.fetchedAt < DISPLAY_NAME_CACHE_TTL_MS) {
+      if (cached.name) {
+        byId[id] = cached.name;
+      }
+    } else {
+      missing.push(id);
+    }
+  }
+
+  const results = await Promise.all(
+    missing.map(async (id) => {
+      try {
+        const response = await client.users.info({ user: id });
+        const name = pickDisplayName(response?.user?.profile || {});
+        // Cache misses too, so a deactivated or unknown id cannot be re-requested
+        // on every single huddle.
+        displayNameCache.set(id, { name, fetchedAt: Date.now() });
+        return { id, name };
+      } catch {
+        displayNameCache.set(id, { name: '', fetchedAt: Date.now() });
+        return { id, name: '' };
+      }
+    }),
+  );
+
+  for (const { id, name } of results) {
+    if (name) {
+      byId[id] = name;
+    }
+  }
+  return byId;
+}
+
+export function clearDisplayNameCache() {
+  displayNameCache.clear();
+}
 
 function ensureArray(value) {
   return Array.isArray(value) ? value : [];

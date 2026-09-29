@@ -1,4 +1,4 @@
-import { sendDirectMessage } from '../services/slack.js';
+import { resolveDisplayNames, sendDirectMessage } from '../services/slack.js';
 import { computeHuddlePoints, parseParticipantHistory } from './points.js';
 import {
   computeHuddleStats,
@@ -1060,7 +1060,15 @@ export function createHuddleTracker({ app, store, client, logger, ownerId = '', 
     }
 
     const timezone = store.getSettings().timezone || 'UTC';
-    const text = formatHuddleReviewMessage(stats, { timezone });
+    // Names, not mentions: a review that pings everyone who was on the call
+    // notifies the entire call the moment someone reads it.
+    const displayNames = await resolveDisplayNames(client, [
+      stats.createdBy,
+      ...stats.participants.map((participant) => participant.userId),
+      stats.messageStats?.longest?.userId,
+      stats.messageStats?.shortest?.userId,
+    ]);
+    const text = formatHuddleReviewMessage(stats, { timezone, displayNames });
 
     if (huddle.channel_id && huddle.thread_root_ts) {
       await actionClient.chat.postMessage({

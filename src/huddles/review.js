@@ -105,18 +105,33 @@ function channelLabel(stats) {
   return stats.channelName ? `#${stats.channelName}` : `<#${stats.channelId}>`;
 }
 
-export function formatHuddleReviewMessage(stats, { timezone = 'UTC' } = {}) {
+/**
+ * Name someone for display, never as a Slack mention.
+ *
+ * A huddle review lists everyone who was in the call. Using <@U123> there turned
+ * reading the stats into a notification for every single person on the call, so
+ * the review names them in plain text instead. A missing name falls back to the
+ * raw id, which is ugly but still pings nobody.
+ */
+function personLabel(userId, displayNames) {
+  if (!userId) {
+    return 'unknown';
+  }
+  return displayNames?.[userId] || userId;
+}
+
+export function formatHuddleReviewMessage(stats, { timezone = 'UTC', displayNames = {} } = {}) {
   const participantLines = stats.participants.map((participant) => {
     const isLongest = participant.userId === stats.longestParticipantId;
     const durationLabel = formatDuration(participant.durationSeconds);
     const badge = isLongest ? ' *— longest in the huddle*' : '';
-    return `• <@${participant.userId}> — ${durationLabel}${badge}`;
+    return `• ${personLabel(participant.userId, displayNames)} — ${durationLabel}${badge}`;
   });
 
   const lines = [
     `🎧 *Huddle review* — ${channelLabel(stats)}`,
     '',
-    `*Started by:* ${stats.createdBy ? `<@${stats.createdBy}>` : 'unknown'} · ${formatTime(stats.startedAt, timezone)}`,
+    `*Started by:* ${personLabel(stats.createdBy, displayNames)} · ${formatTime(stats.startedAt, timezone)}`,
     `*Ended:* ${formatTime(stats.endedAt, timezone)}`,
     `*Total duration:* ${formatDuration(stats.durationSeconds)}`,
     '',
@@ -127,10 +142,10 @@ export function formatHuddleReviewMessage(stats, { timezone = 'UTC' } = {}) {
   if (stats.messageStats) {
     lines.push('', '*Huddle chat messages:*');
     if (stats.messageStats.longest) {
-      lines.push(formatMessageStat('*Longest message:*', stats.messageStats.longest));
+      lines.push(formatMessageStat('*Longest message:*', stats.messageStats.longest, displayNames));
     }
     if (stats.messageStats.shortest) {
-      lines.push(formatMessageStat('*Shortest message:*', stats.messageStats.shortest));
+      lines.push(formatMessageStat('*Shortest message:*', stats.messageStats.shortest, displayNames));
     }
   } else {
     lines.push('', '_No huddle chat messages were recorded._');
@@ -139,10 +154,10 @@ export function formatHuddleReviewMessage(stats, { timezone = 'UTC' } = {}) {
   return lines.join('\n');
 }
 
-function formatMessageStat(label, stat) {
+function formatMessageStat(label, stat, displayNames) {
   const snippet = stat.text ? ` — "${truncate(stat.text, 80)}"` : '';
   const link = stat.permalink ? ` <${stat.permalink}|view message>` : '';
-  return `${label} ${stat.length} chars by <@${stat.userId}>${snippet}${link}`;
+  return `${label} ${stat.length} chars by ${personLabel(stat.userId, displayNames)}${snippet}${link}`;
 }
 
 function truncate(text, maxLength) {
