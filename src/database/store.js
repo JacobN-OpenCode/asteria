@@ -409,8 +409,35 @@ export async function createStore(databasePath, options = {}) {
       restrict_triggers INTEGER NOT NULL DEFAULT 0,
       owner_ids TEXT NOT NULL DEFAULT '[]',
       paused_until INTEGER NOT NULL DEFAULT 0,
+      -- 0 = the channel is public, 1 = private, -1 = we have not been told yet.
+      -- Anything other than 0 is treated as private, so an unanswered Slack
+      -- lookup hides detail rather than publishing a private channel.
+      is_private INTEGER NOT NULL DEFAULT -1,
+      -- When on, the bot posts only the one line summary and leaves the detail
+      -- on the huddle's own page.
+      condensed_review INTEGER NOT NULL DEFAULT 0,
       updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
     );
+
+    -- Why each person got the points they got, per huddle.
+    --
+    -- huddle_leaderboard only ever held a running total, which made it
+    -- impossible to answer "why does this person have 808 points" or to show the
+    -- breakdown on a huddle's own page. Reasons are kept as written by
+    -- computeHuddlePoints ("12m", "rank 1", "longest message") so the wording
+    -- on the page is the wording the rules produced.
+    CREATE TABLE IF NOT EXISTS huddle_awards (
+      huddle_id TEXT NOT NULL,
+      user_id TEXT NOT NULL,
+      channel_id TEXT NOT NULL DEFAULT '',
+      points INTEGER NOT NULL DEFAULT 0,
+      reasons TEXT NOT NULL DEFAULT '[]',
+      awarded_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      PRIMARY KEY (huddle_id, user_id)
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_huddle_awards_user ON huddle_awards(user_id);
+    CREATE INDEX IF NOT EXISTS idx_huddle_awards_channel ON huddle_awards(channel_id);
 
     CREATE TABLE IF NOT EXISTS trigger_log (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -453,6 +480,19 @@ export async function createStore(databasePath, options = {}) {
   const triggerLogColumns = bindAndFetchAll(database, 'PRAGMA table_info(trigger_log)').map((column) => column.name);
   if (!triggerLogColumns.includes('channel_id')) {
     bindAndRun(database, "ALTER TABLE trigger_log ADD COLUMN channel_id TEXT NOT NULL DEFAULT ''");
+  }
+
+  // Added after the first release, so existing databases need them backfilled.
+  // is_private defaults to -1 (unknown) rather than 0, because guessing "public"
+  // for a channel we have not checked would publish a private channel's detail.
+  const huddleChannelColumns = bindAndFetchAll(database, 'PRAGMA table_info(huddle_channels)').map(
+    (column) => column.name,
+  );
+  if (!huddleChannelColumns.includes('is_private')) {
+    bindAndRun(database, 'ALTER TABLE huddle_channels ADD COLUMN is_private INTEGER NOT NULL DEFAULT -1');
+  }
+  if (!huddleChannelColumns.includes('condensed_review')) {
+    bindAndRun(database, 'ALTER TABLE huddle_channels ADD COLUMN condensed_review INTEGER NOT NULL DEFAULT 0');
   }
 
   bindAndRun(
@@ -1617,6 +1657,8 @@ export async function createStore(databasePath, options = {}) {
             owner_ids: '[]',
             paused_until: 0,
             configured: false,
+            is_private: -1,
+            condensed_review: 0,
           });
         } else if (row.channel_name && !configured.get(row.channel_id).name) {
           configured.get(row.channel_id).name = row.channel_name;
@@ -1626,6 +1668,10 @@ export async function createStore(databasePath, options = {}) {
         ...row,
         configured: row.configured !== false,
         owner_ids: parseOwnerIds(row.owner_ids),
+        // Anything that is not a confirmed 0 counts as private, so a channel we
+        // have never been told about is never treated as publishable.
+        isPrivate: Number(row.is_private) === 0 ? 0 : Number(row.is_private) === 1 ? 1 : -1,
+        condensedReview: Number(row.condensed_review) === 1,
       }));
     },
 
@@ -1637,21 +1683,39 @@ export async function createStore(databasePath, options = {}) {
       restrictTriggers = false,
       ownerIds = [],
       pausedUntil = 0,
+      condensedReview,
+      isPrivate,
     }) {
+      // Only write the privacy and condensed columns when the caller actually
+      // knows them, so a partial update cannot reset a setting someone set in
+      // App Home by way of a stale copy of the row.
+      const sets = [
+        'name = excluded.name',
+        'enabled = excluded.enabled',
+        'auto_replies = excluded.auto_replies',
+        'restrict_triggers = excluded.restrict_triggers',
+        'owner_ids = excluded.owner_ids',
+        'paused_until = excluded.paused_until',
+      ];
+      if (condensedReview !== undefined) {
+        sets.push('condensed_review = excluded.condensed_review');
+      }
+      if (isPrivate !== undefined) {
+        sets.push('is_private = excluded.is_private');
+      }
       bindAndRun(
         database,
         `
         INSERT INTO huddle_channels (
-          channel_id, name, enabled, auto_replies, restrict_triggers, owner_ids, paused_until, updated_at
+          channel_id, name, enabled, auto_replies, restrict_triggers, owner_ids, paused_until,
+          condensed_review, is_private, updated_at
         )
-        VALUES ($channel_id, $name, $enabled, $auto_replies, $restrict_triggers, $owner_ids, $paused_until, CURRENT_TIMESTAMP)
+        VALUES (
+          $channel_id, $name, $enabled, $auto_replies, $restrict_triggers, $owner_ids, $paused_until,
+          $condensed_review, $is_private, CURRENT_TIMESTAMP
+        )
         ON CONFLICT(channel_id) DO UPDATE SET
-          name = excluded.name,
-          enabled = excluded.enabled,
-          auto_replies = excluded.auto_replies,
-          restrict_triggers = excluded.restrict_triggers,
-          owner_ids = excluded.owner_ids,
-          paused_until = excluded.paused_until,
+          ${sets.join(',\n          ')},
           updated_at = CURRENT_TIMESTAMP
       `,
         {
@@ -1662,9 +1726,100 @@ export async function createStore(databasePath, options = {}) {
           $restrict_triggers: restrictTriggers ? 1 : 0,
           $owner_ids: JSON.stringify(Array.isArray(ownerIds) ? ownerIds : []),
           $paused_until: Math.max(0, Math.floor(pausedUntil || 0)),
+          $condensed_review: condensedReview ? 1 : 0,
+          // -1 is "unknown" and is preserved on insert; see the schema comment.
+          $is_private: isPrivate === undefined ? -1 : isPrivate ? 1 : 0,
         },
       );
       persist();
+    },
+
+    /**
+     * Replace the stored breakdown for one huddle.
+     *
+     * Called with the full set of awards rather than merged in, because a huddle
+     * can be re-tracked with the track-again button and the second pass may award
+     * a different total. Passing the whole Map makes the write idempotent.
+     */
+    saveHuddleAwards(callId, channelId, awards) {
+      const huddleId = String(callId || '');
+      if (!huddleId) {
+        return 0;
+      }
+      const rows = [...(awards instanceof Map ? awards : new Map(Object.entries(awards || {})))].filter(
+        ([userId]) => userId,
+      );
+      bindAndRun(database, 'DELETE FROM huddle_awards WHERE huddle_id = $huddle_id', { $huddle_id: huddleId });
+      for (const [userId, entry] of rows) {
+        bindAndRun(
+          database,
+          `
+          INSERT INTO huddle_awards (huddle_id, user_id, channel_id, points, reasons, awarded_at)
+          VALUES ($huddle_id, $user_id, $channel_id, $points, $reasons, CURRENT_TIMESTAMP)
+        `,
+          {
+            $huddle_id: huddleId,
+            $user_id: userId,
+            $channel_id: String(channelId || ''),
+            $points: Math.max(0, Math.floor(entry?.points || 0)),
+            $reasons: JSON.stringify(Array.isArray(entry?.reasons) ? entry.reasons : []),
+          },
+        );
+      }
+      if (rows.length > 0) {
+        persist();
+      }
+      return rows.length;
+    },
+
+    /** The per-person points breakdown for one huddle, biggest first. */
+    listHuddleAwards(callId) {
+      return bindAndFetchAll(
+        database,
+        `
+        SELECT user_id, channel_id, points, reasons
+        FROM huddle_awards
+        WHERE huddle_id = $huddle_id
+        ORDER BY points DESC, user_id ASC
+      `,
+        { $huddle_id: String(callId || '') },
+      ).map((row) => ({
+        userId: row.user_id,
+        channelId: row.channel_id || '',
+        points: Number(row.points) || 0,
+        reasons: (() => {
+          try {
+            const parsed = JSON.parse(row.reasons || '[]');
+            return Array.isArray(parsed) ? parsed : [];
+          } catch {
+            return [];
+          }
+        })(),
+      }));
+    },
+
+    /** Total points and total huddle time for a channel, from stored awards and huddles. */
+    listChannelAwardTotals(channelId) {
+      const points =
+        Number(
+          bindAndFetchOne(
+            database,
+            'SELECT COALESCE(SUM(points), 0) AS total FROM huddle_awards WHERE channel_id = $channel_id',
+            { $channel_id: String(channelId || '') },
+          )?.total,
+        ) || 0;
+      const seconds =
+        Number(
+          bindAndFetchOne(
+            database,
+            `
+            SELECT COALESCE(SUM(MAX(0, ended_at - started_at)), 0) AS total FROM huddles
+            WHERE channel_id = $channel_id AND ended_at IS NOT NULL AND ended_at > started_at
+          `,
+            { $channel_id: String(channelId || '') },
+          )?.total,
+        ) || 0;
+      return { points, seconds };
     },
 
     /**
