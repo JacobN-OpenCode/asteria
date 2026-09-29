@@ -337,6 +337,9 @@ export function createHuddleTracker({ app, store, client, logger, ownerId = '', 
     for (const [userId, entry] of awards) {
       store.awardHuddlePoints(userId, entry.points, huddle.channel_id || '');
     }
+    // The running totals above cannot answer "why does this person have 808
+    // points", and a huddle's own page needs the per-person reasons. Keep them.
+    store.saveHuddleAwards(huddle.call_id, huddle.channel_id || '', awards);
   }
 
   async function applyJoin(userId, callId) {
