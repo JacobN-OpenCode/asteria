@@ -4,8 +4,11 @@ export function createHomeAssistantService({ getSettings, logger }) {
   }
 
   function isConfigured() {
-    const { home_assistant_url: baseUrl, home_assistant_token: token, home_assistant_steps_entity: stepsEntity } =
-      currentSettings();
+    const {
+      home_assistant_url: baseUrl,
+      home_assistant_token: token,
+      home_assistant_steps_entity: stepsEntity,
+    } = currentSettings();
     return Boolean(baseUrl && token && stepsEntity);
   }
 
@@ -14,8 +17,11 @@ export function createHomeAssistantService({ getSettings, logger }) {
    * @returns {Promise<{ configured: boolean, steps: number | null, entity: string | null, error?: string }>}
    */
   async function fetchSteps() {
-    const { home_assistant_url: baseUrl, home_assistant_token: token, home_assistant_steps_entity: stepsEntity } =
-      currentSettings();
+    const {
+      home_assistant_url: baseUrl,
+      home_assistant_token: token,
+      home_assistant_steps_entity: stepsEntity,
+    } = currentSettings();
     const normalizedBaseUrl = (baseUrl || '').replace(/\/+$/, '');
 
     if (!normalizedBaseUrl || !token || !stepsEntity) {

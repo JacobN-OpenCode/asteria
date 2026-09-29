@@ -32,6 +32,21 @@ async function createTestStore() {
   return createStore(databasePath);
 }
 
+// Every channel the huddle tests use. The tracker refuses to consider a huddle in
+// a channel the bot is not in, so the harness has to report membership for them.
+const ALL_TEST_CHANNELS = [
+  'Celsewhere',
+  'Chippo',
+  'Cmine',
+  'Cmute',
+  'Cpress',
+  'Cquiet',
+  'Crandom',
+  'Cthr',
+  'Cbot',
+  'Dquiet',
+];
+
 function createTrackerHarness({ store, client, ownerId, botChannelIds, botChannels }) {
   const handlers = {};
   const app = {
@@ -52,7 +67,7 @@ function createTrackerHarness({ store, client, ownerId, botChannelIds, botChanne
     client,
     logger: { error: mock.fn(), info: mock.fn() },
     ownerId,
-    botChannels: botChannels ?? (botChannelIds ? { list: mock.fn(async () => botChannelIds) } : undefined),
+    botChannels: botChannels ?? { list: mock.fn(async () => botChannelIds ?? ALL_TEST_CHANNELS) },
   });
   return { handlers, tracker };
 }
@@ -365,11 +380,14 @@ describe('huddle tracker integration', () => {
       },
     });
 
+    // A join arrives before the thread message that names the channel, so the
+    // huddle is held unverified: nothing may be scored, reviewed or shown until a
+    // thread message proves the bot is in that channel.
     const liveHuddle = store.getHuddle('R1');
-    assert.equal(liveHuddle.status, 'active');
-    assert.equal(store.listHuddleMembers('R1').length, 1);
+    assert.equal(liveHuddle.status, 'unverified');
+    assert.equal(store.listHuddleMembers('R1').length, 0, 'no attendance until the channel is known');
 
-    handlers.message({
+    await handlers.message({
       message: {
         subtype: 'huddle_thread',
         channel: 'Crandom',
@@ -389,6 +407,10 @@ describe('huddle tracker integration', () => {
     assert.equal(store.getHuddle('R1').channel_id, 'Crandom');
     assert.equal(store.getHuddle('R1').created_by, 'UOWNER');
     assert.equal(store.getHuddle('R1').thread_root_ts, '172000.000000');
+    // The thread message proved the channel, so the placeholder is promoted and
+    // attendance can be recorded from here on.
+    assert.equal(store.getHuddle('R1').status, 'active');
+    assert.equal(store.listHuddleMembers('R1').length, 1, 'the join is applied once the channel is known');
 
     await handlers['event:user_huddle_changed']({
       event: {
@@ -403,7 +425,7 @@ describe('huddle tracker integration', () => {
     assert.equal(store.getHuddle('R1').status, 'active', 'a leave does not end the huddle');
     assert.equal(client.chat.postMessage.mock.callCount(), 0, 'no prompt from a plain leave');
 
-    handlers.message({
+    await handlers.message({
       message: {
         subtype: 'huddle_thread',
         channel: 'Crandom',
@@ -429,7 +451,7 @@ describe('huddle tracker integration', () => {
     assert(prompt.blocks.some((block) => block.type === 'actions'));
     assert.equal(prompt.blocks.find((block) => block.type === 'actions').elements[0].value, 'R1');
 
-    handlers.message({
+    await handlers.message({
       message: {
         subtype: 'huddle_thread',
         channel: 'Crandom',
@@ -504,8 +526,15 @@ describe('huddle tracker integration', () => {
     });
     await flush();
 
-    assert.equal(client.chat.postMessage.mock.callCount(), 0);
-    assert.equal(client.conversations.open.mock.callCount(), 0);
+    assert.deepEqual(
+      client.chat.postMessage.mock.calls.map((c) => ({
+        channel: c.arguments[0].channel,
+        ts: c.arguments[0].thread_ts,
+      })),
+      [],
+      'no post at all: there is no thread to ask in and we never fall back to the channel',
+    );
+    assert.equal(client.conversations.open.mock.callCount(), 0, 'and no DM');
     assert.equal(client.chat.postEphemeral.mock.callCount(), 1);
     assert.deepEqual(client.chat.postEphemeral.mock.calls[0].arguments[0], {
       channel: 'Cpress',
@@ -529,9 +558,12 @@ describe('huddle tracker integration', () => {
         },
       },
     });
-    handlers.message({
+    await handlers.message({
       message: {
         subtype: 'huddle_thread',
+        // A real channel, so the huddle is ours to track, but no thread_root_ts,
+        // which is the case under test: there is nowhere to ask in.
+        channel: 'Cquiet',
         ts: '172800.000000',
         room: {
           id: 'R2',
@@ -540,15 +572,22 @@ describe('huddle tracker integration', () => {
           date_start: 172000,
           date_end: 172800,
           thread_root_ts: '',
-          channels: [],
+          channels: ['Cquiet'],
           participant_history: ['U5'],
         },
       },
     });
     await flush();
 
-    assert.equal(client.chat.postMessage.mock.callCount(), 0);
-    assert.equal(client.conversations.open.mock.callCount(), 0);
+    assert.deepEqual(
+      client.chat.postMessage.mock.calls.map((c) => ({
+        channel: c.arguments[0].channel,
+        ts: c.arguments[0].thread_ts,
+      })),
+      [],
+      'no post at all: there is no thread to ask in and we never fall back to the channel',
+    );
+    assert.equal(client.conversations.open.mock.callCount(), 0, 'and no DM');
     const skipped = store.listTriggerLog(50).filter((row) => row.action === 'huddle_review_prompt_skipped');
     assert.equal(skipped.length, 1);
     assert.equal(skipped[0].user_id, 'U5');
@@ -569,9 +608,12 @@ describe('huddle tracker integration', () => {
         },
       },
     });
-    handlers.message({
+    await handlers.message({
       message: {
         subtype: 'huddle_thread',
+        // A real channel, so the huddle is ours to track, but no thread_root_ts,
+        // which is the case under test: there is nowhere to ask in.
+        channel: 'Cquiet',
         ts: '172800.000000',
         room: {
           id: 'R2',
@@ -580,7 +622,7 @@ describe('huddle tracker integration', () => {
           date_start: 172000,
           date_end: 172800,
           thread_root_ts: '',
-          channels: [],
+          channels: ['Cquiet'],
           participant_history: ['U5'],
         },
       },
@@ -614,7 +656,7 @@ describe('huddle tracker integration', () => {
         },
       },
     });
-    handlers.message({
+    await handlers.message({
       message: {
         subtype: 'huddle_thread',
         channel: 'Cthr',
@@ -639,7 +681,7 @@ describe('huddle tracker integration', () => {
         },
       },
     });
-    handlers.message({
+    await handlers.message({
       message: {
         subtype: 'huddle_thread',
         channel: 'Cthr',
@@ -714,7 +756,7 @@ describe('huddle tracker integration', () => {
     const client = createBasicClient();
     const { handlers, tracker } = createTrackerHarness({ store, client, ownerId: 'UOWNER' });
 
-    handlers.message({
+    await handlers.message({
       message: {
         subtype: 'huddle_thread',
         channel: 'Crandom',
@@ -742,7 +784,7 @@ describe('huddle tracker integration', () => {
     assert.equal(noticeAction.action_id, 'huddle_opt_out');
     assert.equal(noticeAction.value, 'Rnew');
 
-    handlers.message({
+    await handlers.message({
       message: {
         subtype: 'huddle_thread',
         channel: 'Crandom',
@@ -784,7 +826,9 @@ describe('huddle tracker integration', () => {
         },
       },
     });
-    assert.equal(store.getHuddle('R5').status, 'active');
+    // No thread message has named a channel yet, so the huddle is held
+    // unverified rather than tracked. Opting out still works from there.
+    assert.equal(store.getHuddle('R5').status, 'unverified');
 
     await handlers['action:huddle_opt_out']({
       ack: mock.fn(),
@@ -821,7 +865,7 @@ describe('huddle tracker integration', () => {
     assert.equal(client.chat.postMessage.mock.callCount(), 0, 'no review prompt for an opted-out huddle');
     assert.equal(store.getHuddle('R5').status, 'opted_out', 'a plain leave does not end an opted-out huddle');
 
-    handlers.message({
+    await handlers.message({
       message: {
         subtype: 'huddle_thread',
         channel: 'Crandom',
@@ -875,11 +919,14 @@ describe('huddle tracker integration', () => {
     }
     await flush();
 
-    assert.equal(store.listHuddleMembers('Rmulti').length, 2);
-    assert.equal(store.getHuddle('Rmulti').status, 'active', 'still active even after EVERY member leaves');
+    // No channel is known yet, so nobody is attributed to the huddle: the bot
+    // does not record attendance in a channel it cannot prove it is inside.
+    assert.equal(store.listHuddleMembers('Rmulti').length, 0);
+    assert.equal(store.listHuddleAttendance('Rmulti').length, 0, 'no attendance without a channel');
+    assert.equal(store.getHuddle('Rmulti').status, 'unverified', 'held, not active');
     assert.equal(client.chat.postMessage.mock.callCount(), 0, 'no prompt from leaves');
 
-    handlers.message({
+    await handlers.message({
       message: {
         subtype: 'huddle_thread',
         channel: 'Crandom',
@@ -954,7 +1001,7 @@ describe('huddle tracker integration', () => {
     store.setUserHuddleState({ userId: 'USOMEONEELSE', callId: 'Rother', isIn: true });
 
     // UOWNER pings the bot in an ordinary channel, not a thread, not in a huddle.
-    handlers.message({
+    await handlers.message({
       message: {
         type: 'message',
         channel: 'Cquiet',
@@ -992,7 +1039,7 @@ describe('huddle tracker integration', () => {
     // The reply mixes four roasts with a pile of 6/7 jokes, so ask a few times
     // and require that any duration offered is the pinger's own.
     for (let i = 0; i < 30; i += 1) {
-      handlers.message({
+      await handlers.message({
         message: { type: 'message', channel: 'Cmine', user: 'UOWNER', text: '<@BOTUSER> hi' },
       });
     }
@@ -1030,7 +1077,7 @@ describe('huddle tracker integration', () => {
     });
     store.setHuddleStatus('Ropt', 'opted_out', 172600);
 
-    handlers.message({
+    await handlers.message({
       message: {
         type: 'message',
         channel: 'Cquiet',
@@ -1064,7 +1111,7 @@ describe('huddle tracker integration', () => {
       participantHistory: ['UOWNER'],
     });
 
-    handlers.message({
+    await handlers.message({
       message: {
         type: 'message',
         subtype: undefined,
@@ -1100,7 +1147,7 @@ describe('huddle tracker integration', () => {
     });
     store.setHuddleOptedOut('Ropt');
 
-    handlers.message({
+    await handlers.message({
       message: {
         type: 'message',
         channel: 'Crandom',
@@ -1182,7 +1229,7 @@ describe('huddle tracker integration', () => {
     });
     store.setHuddleStatus('Rend', 'ended', 173000);
 
-    handlers.message({
+    await handlers.message({
       message: {
         type: 'message',
         channel: 'Crandom',
@@ -1204,7 +1251,7 @@ describe('huddle tracker integration', () => {
     const client = createBasicClient();
     const { handlers, tracker } = createTrackerHarness({ store, client, ownerId: 'UOWNER' });
 
-    handlers.message({
+    await handlers.message({
       message: {
         type: 'message',
         channel: 'Crandom',
@@ -1239,7 +1286,7 @@ describe('huddle tracker integration', () => {
       participantHistory: ['UOWNER'],
     });
 
-    handlers.message({
+    await handlers.message({
       message: {
         type: 'message',
         channel: 'Crandom',
@@ -1266,7 +1313,7 @@ describe('huddle tracker integration', () => {
     const client = createBasicClient();
     const { handlers, tracker } = createTrackerHarness({ store, client, ownerId: 'UOWNER' });
 
-    handlers.message({
+    await handlers.message({
       message: {
         type: 'message',
         channel: 'Crandom',
@@ -1341,8 +1388,8 @@ describe('huddle tracker integration', () => {
       participantHistory: ['UOWNER'],
     });
 
-    const mention = () =>
-      handlers.message({
+    const mention = async () =>
+      await handlers.message({
         message: {
           type: 'message',
           channel: 'Crandom',
@@ -1352,13 +1399,13 @@ describe('huddle tracker integration', () => {
         },
       });
 
-    mention();
+    await mention();
     await flush();
     assert.equal(client.chat.postMessage.mock.callCount(), 1, 'first reply posts fresh');
     const firstTs = store.getHuddle('Rrep').last_reply_ts;
     assert(firstTs, 'persists the reply ts');
 
-    mention();
+    await mention();
     await flush();
     assert.equal(client.chat.postMessage.mock.callCount(), 1, 'no second stacking reply');
     const replacement = client.chat.update.mock.calls[0];
@@ -1380,7 +1427,7 @@ describe('huddle tracker integration', () => {
     await handlers['event:user_huddle_changed']({
       event: { user: { id: 'U9', profile: { huddle_state: 'in_a_huddle', huddle_state_call_id: 'Rp' } } },
     });
-    handlers.message({
+    await handlers.message({
       message: {
         subtype: 'huddle_thread',
         channel: 'Crandom',
@@ -1429,7 +1476,7 @@ describe('huddle tracker integration', () => {
     await handlers['event:user_huddle_changed']({
       event: { user: { id: 'U9', profile: { huddle_state: 'in_a_huddle', huddle_state_call_id: 'Rout' } } },
     });
-    handlers.message({
+    await handlers.message({
       message: {
         subtype: 'huddle_thread',
         channel: 'Celsewhere',
@@ -1476,7 +1523,7 @@ describe('huddle tracker integration', () => {
     await handlers['event:user_huddle_changed']({
       event: { user: { id: 'U9', profile: { huddle_state: 'in_a_huddle', huddle_state_call_id: 'Rdm' } } },
     });
-    handlers.message({
+    await handlers.message({
       message: {
         subtype: 'huddle_thread',
         channel: 'Ddm',
@@ -1505,7 +1552,7 @@ describe('huddle tracker integration', () => {
     tracker.stop();
   });
 
-  it('never awards points for a huddle with no channel to verify', async () => {
+  it('drops a huddle with no channel to verify instead of recording it', async () => {
     const store = await createTestStore();
     const { handlers, tracker } = createTrackerHarness({
       store,
@@ -1514,12 +1561,13 @@ describe('huddle tracker integration', () => {
       botChannelIds: ['Cbot'],
     });
 
-    // A huddle the bot hears about through presence events alone, then never sees a
-    // channel for: most of the huddles it records are in channels it was never in.
+    // A huddle the bot hears about through presence events alone and then never
+    // gets a channel for. The bot cannot prove it is inside, so it does not exist
+    // as far as Asteria is concerned: not stored, not scored, not shown.
     await handlers['event:user_huddle_changed']({
       event: { user: { id: 'U9', profile: { huddle_state: 'in_a_huddle', huddle_state_call_id: 'Rghost' } } },
     });
-    handlers.message({
+    await handlers.message({
       message: {
         subtype: 'huddle_thread',
         channel: '',
@@ -1538,13 +1586,33 @@ describe('huddle tracker integration', () => {
     });
     await flush();
 
-    assert.equal(store.getHuddle('Rghost').status, 'ended', 'the huddle is still finalised for the logs');
-    assert.deepEqual(store.listHuddleLeaderboard(), [], 'but an unverifiable huddle never scores');
+    // The join event could only create a placeholder, because it carries no
+    // channel. It is never promoted, never scored and never shown, and the
+    // placeholder sweep removes it once it is old enough to be sure.
+    const ghost = store.getHuddle('Rghost');
+    assert.equal(ghost.status, 'unverified', 'held as an unverified placeholder');
+    assert.equal(ghost.channel_id, '', 'with no channel attached');
+    assert.equal(ghost.ended_at, null, 'and never finalised');
+    assert.deepEqual(store.listHuddleMembers('Rghost'), [], 'it has no members');
+    assert.deepEqual(store.listHuddleAttendance('Rghost'), [], 'and no attendance');
+    assert.deepEqual(store.listHuddleLeaderboard(), [], 'it never scores');
     assert.deepEqual(
       store.listHuddleLeaderboard(50, ['Cbot']),
       [],
       'and it is not attributed to a channel the bot happens to be in',
     );
+    assert.equal(
+      store.purgeUnverifiedHuddles(0),
+      0,
+      'a placeholder that was just created is too new to sweep, in case the thread message is still coming',
+    );
+
+    // A placeholder left behind long ago, which is the one that must be cleared.
+    store.upsertHuddle({ callId: 'Roldghost', startedAt: 1000, status: 'unverified' });
+    assert.equal(store.getHuddle('Roldghost').status, 'unverified');
+    assert.equal(store.purgeUnverifiedHuddles(3600), 1, 'the sweep clears a placeholder that is long quiet');
+    assert.equal(store.getHuddle('Roldghost'), null, 'and it is gone');
+    assert.equal(store.getHuddle('Rghost').status, 'unverified', 'leaving the fresh one alone');
 
     tracker.stop();
   });
@@ -1565,7 +1633,7 @@ describe('huddle tracker integration', () => {
       participantHistory: ['UOWNER'],
     });
 
-    handlers.message({
+    await handlers.message({
       message: {
         type: 'message',
         channel: 'Cquiet',
@@ -1613,7 +1681,7 @@ describe('huddle tracker integration', () => {
         text: '<@BOTUSER> status?',
       },
     };
-    handlers.message(ping);
+    await handlers.message(ping);
     await flush();
 
     assert.equal(
@@ -1631,7 +1699,7 @@ describe('huddle tracker integration', () => {
       'and it shows up in the logs',
     );
 
-    handlers.message(ping);
+    await handlers.message(ping);
     await flush();
     assert.equal(client.chat.postMessage.mock.callCount(), 1, 'a second ping is not spammed');
     assert.equal(client.conversations.open.mock.callCount(), 1, 'and no second DM is opened');
@@ -1664,6 +1732,16 @@ describe('huddle tracker integration', () => {
   });
 
   it('computes leaderboard points across duration, rank, prizes and starter', () => {
+    // Fully closed intervals, so the ranking is earned on complete data and the
+    // totals are exactly what the old clean-data calculation produced.
+    const attendance = {
+      partial: false,
+      participants: [
+        { userId: 'U1', seconds: 300, partial: false, intervals: [{ from: 1000, to: 1300 }] },
+        { userId: 'U2', seconds: 250, partial: false, intervals: [{ from: 1000, to: 1250 }] },
+        { userId: 'U3', seconds: 150, partial: false, intervals: [{ from: 1000, to: 1150 }] },
+      ],
+    };
     const awards = computeHuddlePoints({
       huddle: { call_id: 'R', started_at: 1000, ended_at: 1300, created_by: 'U1' },
       members: [
@@ -1671,6 +1749,7 @@ describe('huddle tracker integration', () => {
         { user_id: 'U2', first_seen_at: 1000, last_seen_at: 1250, is_in: false },
         { user_id: 'U3', first_seen_at: 1000, last_seen_at: 1150, is_in: false },
       ],
+      attendance,
       participantHistory: ['U1', 'U2', 'U3'],
       messageStats: {
         longest: { userId: 'U2' },
@@ -1682,6 +1761,21 @@ describe('huddle tracker integration', () => {
     assert.equal(awards.get('U2').points, 4 + 3 + 10, '4m + rank 2 + longest message');
     assert.equal(awards.get('U3').points, 2 + 1 + 10, '2m + rank 3 + shortest message');
     assert(awards.get('U1').reasons.includes('started the huddle'));
+  });
+
+  it('withholds rank bonuses when attendance is only a legacy span', () => {
+    // No intervals means we only have first/last seen, which cannot tell a
+    // continuous stay from a rejoin, so nobody is ranked on it.
+    const awards = computeHuddlePoints({
+      huddle: { call_id: 'Rlegacy', started_at: 1000, ended_at: 1300, created_by: 'U1' },
+      members: [
+        { user_id: 'U1', first_seen_at: 1000, last_seen_at: 1300, is_in: false },
+        { user_id: 'U2', first_seen_at: 1000, last_seen_at: 1250, is_in: false },
+      ],
+      participantHistory: ['U1', 'U2'],
+    });
+    assert.equal(awards.get('U1').points, 5 + 5, '5m + starter, no rank');
+    assert.equal(awards.get('U2').points, 4, '4m, no rank');
   });
 });
 
@@ -1759,7 +1853,7 @@ describe('huddle channel configuration', () => {
 
     store.upsertHuddleChannel({ channelId: 'Crandom', enabled: false, autoReplies: true, ownerIds: [] });
 
-    handlers.message(huddleThreadMessage({ channel: 'Crandom' }));
+    await handlers.message(huddleThreadMessage({ channel: 'Crandom' }));
     await flush();
 
     const huddle = store.getHuddle('R1');
@@ -1784,7 +1878,7 @@ describe('huddle channel configuration', () => {
       pausedUntil: Math.floor(Date.now() / 1000) + 3600,
     });
 
-    handlers.message(huddleThreadMessage({ channel: 'Crandom' }));
+    await handlers.message(huddleThreadMessage({ channel: 'Crandom' }));
     await flush();
 
     assert.equal(store.getHuddle('R1').status, 'opted_out');
@@ -1801,7 +1895,7 @@ describe('huddle channel configuration', () => {
     const { handlers } = createTrackerHarness({ store, client, ownerId: 'UOWNER' });
 
     store.upsertHuddleChannel({ channelId: 'Crandom', enabled: true, autoReplies: false });
-    handlers.message(huddleThreadMessage({ channel: 'Crandom' }));
+    await handlers.message(huddleThreadMessage({ channel: 'Crandom' }));
     await flush();
     const postsBefore = client.chat.postMessage.mock.callCount();
 
@@ -1846,7 +1940,7 @@ describe('huddle channel configuration', () => {
       restrictTriggers: true,
       ownerIds: ['UOWNER'],
     });
-    handlers.message(huddleThreadMessage({ channel: 'Crandom' }));
+    await handlers.message(huddleThreadMessage({ channel: 'Crandom' }));
     await flush();
     const postsBefore = client.chat.postMessage.mock.callCount();
 
@@ -1895,7 +1989,7 @@ describe('huddle channel configuration', () => {
     assert.equal(store.getHuddle('R1').status, 'active');
 
     store.upsertHuddleChannel({ channelId: 'Crandom', pausedUntil: Math.floor(Date.now() / 1000) + 900 });
-    handlers.message(huddleThreadMessage({ channel: 'Crandom' }));
+    await handlers.message(huddleThreadMessage({ channel: 'Crandom' }));
     await flush();
 
     assert.equal(store.getHuddle('R1').status, 'opted_out', 'no review or points for a paused huddle');
@@ -2093,15 +2187,16 @@ describe('huddle reconciliation', () => {
   });
 });
 
-it('writes off a huddle with no channel or thread once it is long quiet', async () => {
+it('discards a huddle with no channel once it is long quiet', async () => {
   const store = await createTestStore();
   const client = createBasicClient();
   const { tracker } = createTrackerHarness({ store, client, ownerId: 'UOWNER' });
   const now = Math.floor(Date.now() / 1000);
 
-  // Seen only through a user_huddle_changed event, so there is no channel and
-  // no thread and nothing to ask Slack about. Left alone this stayed "active"
-  // for a day and counted as a running huddle the whole time.
+  // Seen only through a user_huddle_changed event, so there is no channel to
+  // prove the bot is inside it. Left alone this stayed "active" for a day and
+  // counted as a running huddle the whole time. It is discarded, not finalised:
+  // inventing an end time for a huddle that was never ours would be worse.
   store.upsertHuddle({ callId: 'Rorphan', startedAt: now - 7200, lastSeenAt: now - 5400 });
   store.upsertHuddleMember({
     callId: 'Rorphan',
@@ -2113,7 +2208,33 @@ it('writes off a huddle with no channel or thread once it is long quiet', async 
 
   await tracker.reconcileEndedHuddles();
 
-  const huddle = store.getHuddle('Rorphan');
+  assert.equal(store.getHuddle('Rorphan'), null, 'it is removed rather than left running or ended');
+  assert.deepEqual(store.listHuddleMembers('Rorphan'), [], 'and its roster goes with it');
+  assert.deepEqual(store.listHuddleLeaderboard(), [], 'and it never scored');
+  assert.equal(client.conversations.replies.mock.callCount(), 0, 'there is no thread to ask Slack about');
+  assert.equal(client.chat.postMessage.mock.callCount(), 0, 'and nobody is prompted');
+});
+
+it('discards a huddle with a channel but no thread once it is long quiet', async () => {
+  const store = await createTestStore();
+  const client = createBasicClient();
+  const { tracker } = createTrackerHarness({ store, client, ownerId: 'UOWNER' });
+  const now = Math.floor(Date.now() / 1000);
+
+  // A real channel, so this huddle is ours, but Slack never gave us a thread
+  // root, so there is no thread message to tell us when it stopped.
+  store.upsertHuddle({ callId: 'Rnothread', channelId: 'Crandom', startedAt: now - 7200, lastSeenAt: now - 5400 });
+  store.upsertHuddleMember({
+    callId: 'Rnothread',
+    userId: 'UOWNER',
+    firstSeenAt: now - 7200,
+    lastSeenAt: now - 5400,
+    isIn: true,
+  });
+
+  await tracker.reconcileEndedHuddles();
+
+  const huddle = store.getHuddle('Rnothread');
   assert.equal(huddle.status, 'ended', 'it stops being counted as running');
   assert.equal(huddle.ended_at, now - 5400, 'closed at the last moment we saw anyone');
   assert.equal(client.conversations.replies.mock.callCount(), 0, 'there is no thread to ask Slack about');

@@ -34,7 +34,10 @@ before(async () => {
     client: {},
     botChannels: {
       list: async () => [CHANNEL, 'C0UNCONFIGURED'],
-      names: async (ids) => new Map(ids.map((id) => [id, id === CHANNEL ? 'managed' : 'loose'])),
+      // Must match the real botChannels.names, which returns a plain object keyed
+      // by id. An earlier version of this mock returned a Map, which hid a
+      // `names.get is not a function` that 500'd both tabs in production.
+      names: async (ids) => Object.fromEntries((ids || []).map((id) => [id, id === CHANNEL ? 'managed' : 'loose'])),
     },
     logger: { info() {}, warn() {}, error() {} },
   });
@@ -93,7 +96,11 @@ describe('tabbed pages', () => {
   });
 
   it('explains what the bot cannot see', async () => {
-    const data = await (await get('/api/admin', ownerCookie)).json();
+    // Status first: a 500 would still parse as json and fail later for the wrong
+    // reason, which is how both tabs broke in production without a test noticing.
+    const res = await get('/api/admin', ownerCookie);
+    assert.equal(res.status, 200, '/api/admin must not error');
+    const data = await res.json();
     assert.equal(data.orphans.noChannel, 1, 'the channelless huddle is counted');
     assert(data.orphans.total >= 1);
     assert(
@@ -104,7 +111,9 @@ describe('tabbed pages', () => {
   });
 
   it('flags a channel the bot tracks but has no settings for', async () => {
-    const data = await (await get('/api/huddles/config', ownerCookie)).json();
+    const res = await get('/api/huddles/config', ownerCookie);
+    assert.equal(res.status, 200, '/api/huddles/config must not error');
+    const data = await res.json();
     assert.equal(data.unconfigured.length, 1);
     assert.equal(data.unconfigured[0].name, 'loose');
   });

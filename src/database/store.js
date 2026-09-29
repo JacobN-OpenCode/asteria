@@ -2,6 +2,8 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import initSqlJs from 'sql.js';
+import { summariseAttendance } from '../huddles/attendance.js';
+import { parseParticipantHistory } from '../huddles/points.js';
 import { DEFAULT_QUESTION_PROMPT } from '../services/ai.js';
 import { normalizeTimeValue } from '../utils/time.js';
 
@@ -362,6 +364,35 @@ export async function createStore(databasePath, options = {}) {
       last_seen_at INTEGER,
       is_in INTEGER NOT NULL DEFAULT 0,
       PRIMARY KEY (call_id, user_id)
+    );
+
+    -- One row per stretch of time somebody was actually in a huddle.
+    --
+    -- huddle_members only keeps a single (first_seen_at, last_seen_at) pair per
+    -- person, which silently assumes they never left: rejoining overwrote the
+    -- leave and the gap was destroyed, so a 58 second appearance was billed as
+    -- 182 minutes. Intervals keep the gaps, and attendance is their sum.
+    CREATE TABLE IF NOT EXISTS huddle_attendance (
+      call_id TEXT NOT NULL,
+      user_id TEXT NOT NULL,
+      joined_at INTEGER NOT NULL,
+      left_at INTEGER,
+      -- 1 when we filled the leave time in ourselves because Slack never sent
+      -- one. The span is a ceiling, not a measurement, so it is never awarded
+      -- as points and never counted as proven.
+      inferred INTEGER NOT NULL DEFAULT 0,
+      PRIMARY KEY (call_id, user_id, joined_at)
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_huddle_attendance_call
+      ON huddle_attendance (call_id);
+
+    -- Frozen copy of the leaderboard as it stood before attendance was
+    -- recomputed from real intervals, so the old totals can still be audited.
+    CREATE TABLE IF NOT EXISTS huddle_leaderboard_v1 (
+      user_id TEXT PRIMARY KEY,
+      points INTEGER NOT NULL DEFAULT 0,
+      updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
     );
 
     CREATE TABLE IF NOT EXISTS huddle_user_state (
@@ -1111,10 +1142,49 @@ export async function createStore(databasePath, options = {}) {
     },
 
     /** Huddles the bot still believes are running, oldest first. */
+    /**
+     * Drop placeholders for huddles whose channel was never confirmed.
+     *
+     * A join event can arrive before the thread message that names the channel.
+     * The placeholder is held unverified, and if that message never turns up the
+     * huddle was never in a channel the bot is in, so it is discarded rather than
+     * left lying around in the database.
+     */
+    purgeUnverifiedHuddles(olderThanSeconds) {
+      const cutoff = Math.floor(Date.now() / 1000) - Math.max(60, Number(olderThanSeconds) || 3600);
+      // Any huddle still open with no channel, plus every unverified placeholder.
+      // An ended row is left alone: history that is already closed is not this
+      // sweep's business, and the migration decides what to do with it.
+      const rows = bindAndFetchAll(
+        database,
+        `
+        SELECT call_id FROM huddles
+        WHERE (status = 'unverified' OR (channel_id = '' AND status IN ('active', 'opted_out')))
+          AND started_at > 0 AND started_at < $cutoff
+        `,
+        { $cutoff: cutoff },
+      );
+      for (const row of rows) {
+        bindAndRun(database, 'DELETE FROM huddle_members WHERE call_id = $call_id', { $call_id: row.call_id });
+        bindAndRun(database, 'DELETE FROM huddle_attendance WHERE call_id = $call_id', { $call_id: row.call_id });
+        bindAndRun(database, 'DELETE FROM huddles WHERE call_id = $call_id', { $call_id: row.call_id });
+      }
+      if (rows.length > 0) {
+        persist();
+      }
+      return rows.length;
+    },
+
     listActiveHuddles() {
+      // A channel_id is required, so the reconciler never touches a huddle the
+      // bot has not confirmed it is inside.
       return bindAndFetchAll(
         database,
-        "SELECT * FROM huddles WHERE status = 'active' AND started_at > 0 ORDER BY started_at ASC",
+        `
+        SELECT * FROM huddles
+        WHERE status = 'active' AND started_at > 0 AND channel_id <> ''
+        ORDER BY started_at ASC
+        `,
       );
     },
 
@@ -1211,12 +1281,16 @@ export async function createStore(databasePath, options = {}) {
       // CURRENT_TIMESTAMP would otherwise make a two hour old huddle look like
       // it was reported on a moment ago and the reconciler would never poll it.
       lastSeenAt = 0,
+      // Only used when the row is created. 'unverified' marks a huddle that was
+      // seen joining before we knew which channel it was in; it may not be scored,
+      // reviewed, shown or linked until a thread message proves the bot is inside.
+      status = 'active',
     }) {
       const currentHuddle = this.getHuddle(callId);
       const mergedStartedAt =
         startedAt > 0 ? startedAt : currentHuddle?.started_at > 0 ? currentHuddle.started_at : startedAt;
       const mergedEndedAt = endedAt ?? currentHuddle?.ended_at ?? null;
-      const mergedStatus = currentHuddle?.status || 'active';
+      const mergedStatus = currentHuddle?.status || status;
       bindAndRun(
         database,
         `
@@ -1266,7 +1340,7 @@ export async function createStore(databasePath, options = {}) {
           status = $status,
           ended_at = COALESCE($ended_at, ended_at),
           last_seen_at = CURRENT_TIMESTAMP
-        WHERE call_id = $call_id AND status IN ('active', 'opted_out')
+        WHERE call_id = $call_id AND status IN ('active', 'opted_out', 'unverified')
       `,
         {
           $call_id: callId,
@@ -1546,7 +1620,10 @@ export async function createStore(databasePath, options = {}) {
       return true;
     },
 
-    recordTriggerLog({ userId = '', action, detail = '', channelId = '' }) {
+    // createdAt lets the historical rebuild and its tests write trail rows that
+    // carry a real timestamp. It is an explicit override rather than a silent
+    // default, so live callers keep using the database clock.
+    recordTriggerLog({ userId = '', action, detail = '', channelId = '', createdAt = null }) {
       if (!action) {
         return;
       }
@@ -1554,9 +1631,10 @@ export async function createStore(databasePath, options = {}) {
         database,
         `
         INSERT INTO trigger_log (user_id, action, detail, channel_id, created_at)
-        VALUES ($user_id, $action, $detail, $channel_id, CURRENT_TIMESTAMP)
+        VALUES ($user_id, $action, $detail, $channel_id, COALESCE($created_at, CURRENT_TIMESTAMP))
       `,
         {
+          $created_at: createdAt,
           $user_id: userId,
           $action: action,
           $detail: detail,
@@ -1564,6 +1642,31 @@ export async function createStore(databasePath, options = {}) {
         },
       );
       persist();
+    },
+
+    /**
+     * Every join and leave event ever recorded, grouped by huddle.
+     *
+     * listTriggerLog is capped at 100 rows for the admin view, which is far too
+     * few to rebuild attendance from, so the audit trail gets its own reader.
+     */
+    listHuddleTrailEvents() {
+      return bindAndFetchAll(
+        database,
+        `
+        SELECT detail AS call_id, user_id, action, created_at
+        FROM trigger_log
+        WHERE action IN ('huddle_join', 'huddle_leave') AND detail != ''
+        ORDER BY id ASC
+        `,
+      );
+    },
+
+    /** Who Slack currently believes is inside a given huddle. */
+    listUsersInHuddle(callId) {
+      return bindAndFetchAll(database, 'SELECT user_id FROM huddle_user_state WHERE call_id = $call_id AND is_in = 1', {
+        $call_id: String(callId || ''),
+      });
     },
 
     listTriggerLog(limit = 50, channelIds = null) {
@@ -1798,6 +1901,47 @@ export async function createStore(databasePath, options = {}) {
       }));
     },
 
+    /**
+     * Was this person actually in this huddle?
+     *
+     * Gates the per person breakdown on a huddle's own page. Slack drops the
+     * occasional join event, so this also checks the participant trail the
+     * huddle thread carries, not just the member rows.
+     */
+    isHuddleParticipant(callId, userId) {
+      const id = String(userId || '');
+      if (!id) {
+        return false;
+      }
+      // A presence interval is proof of attendance, and is the record that now
+      // exists for every huddle tracked since intervals were introduced.
+      if (
+        bindAndFetchOne(
+          database,
+          'SELECT 1 AS ok FROM huddle_attendance WHERE call_id = $call_id AND user_id = $user_id LIMIT 1',
+          {
+            $call_id: String(callId || ''),
+            $user_id: id,
+          },
+        )
+      ) {
+        return true;
+      }
+      if (
+        bindAndFetchOne(
+          database,
+          'SELECT 1 AS ok FROM huddle_members WHERE call_id = $call_id AND user_id = $user_id',
+          {
+            $call_id: String(callId || ''),
+            $user_id: id,
+          },
+        )
+      ) {
+        return true;
+      }
+      return parseParticipantHistory(this.getHuddle(callId)).includes(id);
+    },
+
     /** Total points and total huddle time for a channel, from stored awards and huddles. */
     listChannelAwardTotals(channelId) {
       const points =
@@ -1907,6 +2051,198 @@ export async function createStore(databasePath, options = {}) {
       persist();
     },
 
+    /**
+     * Record that somebody joined a huddle, opening a presence interval.
+     *
+     * A second join without an intervening leave (Slack sometimes re-sends one)
+     * extends the open interval instead of creating an overlapping second one,
+     * so attendance can never be counted twice for the same moment.
+     */
+    openHuddleAttendance(callId, userId, at) {
+      const joinedAt = Math.floor(Number(at) || Date.now() / 1000);
+      const open = bindAndFetchOne(
+        database,
+        `
+        SELECT joined_at FROM huddle_attendance
+        WHERE call_id = $call_id AND user_id = $user_id AND left_at IS NULL
+        ORDER BY joined_at LIMIT 1
+        `,
+        { $call_id: String(callId || ''), $user_id: String(userId || '') },
+      );
+      if (open) {
+        return;
+      }
+      bindAndRun(
+        database,
+        'INSERT OR IGNORE INTO huddle_attendance (call_id, user_id, joined_at, left_at) VALUES ($call_id, $user_id, $joined_at, NULL)',
+        { $call_id: String(callId || ''), $user_id: String(userId || ''), $joined_at: joinedAt },
+      );
+      persist();
+    },
+
+    /**
+     * Close somebody's open presence interval, keeping the exact leave time.
+     */
+    closeHuddleAttendance(callId, userId, at) {
+      const leftAt = Math.floor(Number(at) || Date.now() / 1000);
+      bindAndRun(
+        database,
+        `
+        UPDATE huddle_attendance SET left_at = $left_at
+        WHERE call_id = $call_id AND user_id = $user_id AND left_at IS NULL
+        `,
+        { $call_id: String(callId || ''), $user_id: String(userId || ''), $left_at: leftAt },
+      );
+      persist();
+    },
+
+    /**
+     * Close every still-open interval for a huddle, marking the end as inferred.
+     *
+     * Slack drops leave events, so a join can outlive the call with no matching
+     * leave. The end time is filled in to bound the row, but `inferred` keeps it
+     * out of anybody's score: it is a ceiling we cannot prove.
+     */
+    closeAllOpenHuddleAttendance(callId, at) {
+      const leftAt = Math.floor(Number(at) || Date.now() / 1000);
+      const result = bindAndRun(
+        database,
+        'UPDATE huddle_attendance SET left_at = $left_at, inferred = 1 WHERE call_id = $call_id AND left_at IS NULL',
+        { $call_id: String(callId || ''), $left_at: leftAt },
+      );
+      persist();
+      return result?.changes ?? 0;
+    },
+
+    /** Insert an interval directly, used when rebuilding attendance from the audit trail. */
+    insertHuddleAttendance({ callId, userId, joinedAt, leftAt = null, inferred = false }) {
+      bindAndRun(
+        database,
+        `
+        INSERT OR REPLACE INTO huddle_attendance (call_id, user_id, joined_at, left_at, inferred)
+        VALUES ($call_id, $user_id, $joined_at, $left_at, $inferred)
+        `,
+        {
+          $call_id: String(callId || ''),
+          $user_id: String(userId || ''),
+          $joined_at: Math.floor(Number(joinedAt) || 0),
+          $left_at: leftAt == null ? null : Math.floor(Number(leftAt)),
+          $inferred: toBooleanInteger(inferred),
+        },
+      );
+    },
+
+    /** Wipe rebuilt attendance, so the rebuild can be re-run from scratch. */
+    clearHuddleAttendance() {
+      bindAndRun(database, 'DELETE FROM huddle_attendance');
+    },
+
+    /** How many rows are in the pre-recompute snapshot. Used to prove a dry run took none. */
+    countLeaderboardSnapshots() {
+      return Number(bindAndFetchOne(database, 'SELECT COUNT(*) AS n FROM huddle_leaderboard_v1')?.n ?? 0);
+    },
+
+    /** Freeze the current leaderboard before it is recomputed, for auditing. */
+    snapshotLeaderboard() {
+      bindAndRun(
+        database,
+        `
+        INSERT OR REPLACE INTO huddle_leaderboard_v1 (user_id, points, updated_at)
+        SELECT user_id, points, updated_at FROM huddle_leaderboard
+        `,
+      );
+      persist();
+      return bindAndFetchOne(database, 'SELECT COUNT(*) AS n FROM huddle_leaderboard_v1')?.n ?? 0;
+    },
+
+    /** Set somebody's leaderboard and per channel totals to an exact recomputed value. */
+    setLeaderboardTotals(userId, points, channelId = '') {
+      bindAndRun(
+        database,
+        `
+        INSERT INTO huddle_leaderboard (user_id, points, updated_at) VALUES ($user_id, $points, CURRENT_TIMESTAMP)
+        ON CONFLICT(user_id) DO UPDATE SET points = excluded.points, updated_at = CURRENT_TIMESTAMP
+        `,
+        { $user_id: String(userId || ''), $points: Math.max(0, Math.floor(Number(points) || 0)) },
+      );
+      if (channelId) {
+        bindAndRun(
+          database,
+          `
+          INSERT INTO huddle_channel_points (channel_id, user_id, points, updated_at)
+          VALUES ($channel_id, $user_id, $points, CURRENT_TIMESTAMP)
+          ON CONFLICT(channel_id, user_id) DO UPDATE SET points = excluded.points, updated_at = CURRENT_TIMESTAMP
+          `,
+          {
+            $channel_id: String(channelId || ''),
+            $user_id: String(userId || ''),
+            $points: Math.max(0, Math.floor(Number(points) || 0)),
+          },
+        );
+      }
+    },
+
+    /** Every leaderboard row, for the recompute. */
+    listLeaderboardTotals() {
+      return bindAndFetchAll(database, 'SELECT user_id, points FROM huddle_leaderboard');
+    },
+
+    /** Overwrite one channel's running total for a person, used by the recompute. */
+    setChannelPointTotals(channelId, userId, points) {
+      bindAndRun(
+        database,
+        `
+        INSERT INTO huddle_channel_points (channel_id, user_id, points, updated_at)
+        VALUES ($channel_id, $user_id, $points, CURRENT_TIMESTAMP)
+        ON CONFLICT(channel_id, user_id) DO UPDATE SET points = excluded.points, updated_at = CURRENT_TIMESTAMP
+        `,
+        {
+          $channel_id: String(channelId || ''),
+          $user_id: String(userId || ''),
+          $points: Math.max(0, Math.floor(Number(points) || 0)),
+        },
+      );
+      persist();
+    },
+
+    listChannelPointTotals() {
+      return bindAndFetchAll(database, 'SELECT channel_id, user_id, points FROM huddle_channel_points');
+    },
+
+    /** Raw presence intervals for a huddle, oldest first. */
+    listHuddleAttendance(callId) {
+      return bindAndFetchAll(
+        database,
+        'SELECT user_id, joined_at, left_at, inferred FROM huddle_attendance WHERE call_id = $call_id ORDER BY user_id, joined_at',
+        { $call_id: String(callId || '') },
+      );
+    },
+
+    /** Did anybody leave a join open? If so, some attendance is unprovable. */
+    countOpenHuddleAttendance(callId) {
+      const row = bindAndFetchOne(
+        database,
+        'SELECT COUNT(*) AS n FROM huddle_attendance WHERE call_id = $call_id AND left_at IS NULL',
+        { $call_id: String(callId || '') },
+      );
+      return Number(row?.n) || 0;
+    },
+
+    /**
+     * Per person attendance for a huddle, as the sum of closed intervals.
+     *
+     * Intervals are clipped to the call's own window and to each other, so
+     * overlapping or out of range events can never inflate the total past the
+     * length of the huddle itself. When a join was never closed the person's
+     * time is reported as what can actually be proven and `partial` is set, so
+     * points are never awarded on a guess.
+     */
+    computeHuddleAttendance(callId, { startedAt = null, endedAt = null } = {}) {
+      // The maths lives in one pure function so the historical rebuild can
+      // reproduce these exact totals without touching the database.
+      return summariseAttendance(this.listHuddleAttendance(callId), { startedAt, endedAt });
+    },
+
     upsertHuddleMember({ callId, userId, firstSeenAt, lastSeenAt, isIn }) {
       bindAndRun(
         database,
@@ -1937,6 +2273,13 @@ export async function createStore(databasePath, options = {}) {
         },
       );
       persist();
+    },
+
+    getHuddleMember(callId, userId) {
+      return bindAndFetchOne(database, 'SELECT * FROM huddle_members WHERE call_id = $call_id AND user_id = $user_id', {
+        $call_id: String(callId || ''),
+        $user_id: String(userId || ''),
+      });
     },
 
     listHuddleMembers(callId) {

@@ -3,29 +3,50 @@ import { DateTime } from 'luxon';
 /**
  * Compute the stats shown in a huddle review from what we tracked.
  *
- * `members` are the (call_id, user_id, first_seen_at, last_seen_at) rows we
- * recorded from `user_huddle_changed`. `participantHistory` is the list of user
- * IDs Slack reports ever joined the huddle; anyone we never saw join is folded
- * in with an unknown duration so attendance stays complete.
+ * `attendance` is the interval based result from
+ * `store.computeHuddleAttendance`, which is the only trustworthy source: each
+ * entry is the sum of that person's *closed* presence intervals, so the gaps
+ * between them are preserved. The old `members` span (first_seen_at to
+ * last_seen_at) is used only for huddles recorded before intervals existed, and
+ * marks them partial, because that span silently billed a 58 second appearance
+ * as the whole call.
+ *
+ * `participantHistory` is the list of user IDs Slack reports ever joined the
+ * huddle; anyone we never saw join is folded in with an unknown duration so
+ * attendance stays complete.
  */
-export function computeHuddleStats({ huddle, members, participantHistory = [] }) {
+export function computeHuddleStats({ huddle, members, attendance = null, participantHistory = [] }) {
   const startedAt = huddle.started_at ?? 0;
   const endedAt = huddle.ended_at ?? null;
 
-  const participants = members.map((member) => {
-    const durationSeconds =
-      member.first_seen_at != null && member.last_seen_at != null
-        ? Math.max(0, member.last_seen_at - member.first_seen_at)
-        : member.first_seen_at != null && endedAt
-          ? Math.max(0, endedAt - member.first_seen_at)
-          : null;
-    return {
-      userId: member.user_id,
-      firstSeenAt: member.first_seen_at ?? null,
-      lastSeenAt: member.last_seen_at ?? null,
-      durationSeconds,
-    };
-  });
+  const tracked = attendance?.participants ?? [];
+  const fromIntervals = tracked.length > 0;
+
+  const participants = fromIntervals
+    ? tracked.map((entry) => ({
+        userId: entry.userId,
+        firstSeenAt: entry.intervals[0]?.from ?? null,
+        lastSeenAt: entry.intervals.length ? entry.intervals[entry.intervals.length - 1].to : null,
+        durationSeconds: entry.partial ? null : entry.seconds,
+        provableSeconds: entry.seconds,
+        partial: entry.partial,
+      }))
+    : members.map((member) => {
+        const durationSeconds =
+          member.first_seen_at != null && member.last_seen_at != null
+            ? Math.max(0, member.last_seen_at - member.first_seen_at)
+            : member.first_seen_at != null && endedAt
+              ? Math.max(0, endedAt - member.first_seen_at)
+              : null;
+        return {
+          userId: member.user_id,
+          firstSeenAt: member.first_seen_at ?? null,
+          lastSeenAt: member.last_seen_at ?? null,
+          durationSeconds,
+          provableSeconds: durationSeconds ?? 0,
+          partial: true,
+        };
+      });
 
   const knownIds = new Set(participants.map((participant) => participant.userId));
   for (const userId of participantHistory) {
@@ -35,13 +56,15 @@ export function computeHuddleStats({ huddle, members, participantHistory = [] })
         firstSeenAt: null,
         lastSeenAt: null,
         durationSeconds: null,
+        provableSeconds: 0,
+        partial: true,
       });
     }
   }
 
   participants.sort((a, b) => {
-    const aDuration = a.durationSeconds ?? -1;
-    const bDuration = b.durationSeconds ?? -1;
+    const aDuration = a.provableSeconds ?? -1;
+    const bDuration = b.provableSeconds ?? -1;
     if (bDuration !== aDuration) {
       return bDuration - aDuration;
     }
@@ -49,10 +72,10 @@ export function computeHuddleStats({ huddle, members, participantHistory = [] })
   });
 
   const longestParticipant = [...participants]
-    .filter((participant) => participant.durationSeconds != null)
+    .filter((participant) => (participant.provableSeconds ?? -1) > 0)
     .sort((a, b) => {
-      if (b.durationSeconds !== a.durationSeconds) {
-        return b.durationSeconds - a.durationSeconds;
+      if (b.provableSeconds !== a.provableSeconds) {
+        return b.provableSeconds - a.provableSeconds;
       }
       return (a.firstSeenAt ?? 0) - (b.firstSeenAt ?? 0);
     })[0];
@@ -69,6 +92,10 @@ export function computeHuddleStats({ huddle, members, participantHistory = [] })
     durationSeconds,
     participants,
     longestParticipantId: longestParticipant?.userId ?? null,
+    // True when some attendance could not be proven, either because a join was
+    // never closed or because the huddle predates interval tracking. Surfaces
+    // on the huddle page and keeps points to what can be demonstrated.
+    attendancePartial: fromIntervals ? Boolean(attendance?.partial) : true,
   };
 }
 

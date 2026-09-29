@@ -173,6 +173,44 @@ export function createHuddleTracker({ app, store, client, logger, ownerId = '', 
    * Per-channel rules, configured from the app home. Unconfigured channels keep
    * the default behaviour: tracking on, auto replies on, anyone can trigger.
    */
+  /**
+   * Is this channel one Asteria is actually in?
+   *
+   * Hard invariant: a huddle in any other channel does not exist as far as the
+   * bot is concerned. It is never stored, never scored, never reviewed, never
+   * linked, never repaired and never shown. Asteria only ever looks at the
+   * channels it is a member of.
+   *
+   * Membership is cached briefly because this sits on the hot path of every
+   * huddle event, and Slack rate limits conversations.list.
+   */
+  const membershipCache = { at: 0, ids: null };
+  const MEMBERSHIP_TTL_MS = 60_000;
+
+  async function isBotChannel(channelId) {
+    const id = String(channelId || '');
+    if (!id) {
+      return false;
+    }
+    if (!botChannels) {
+      // Without a membership source we cannot prove the bot is inside, and
+      // "cannot prove" is treated as "no" so nothing leaks in from outside.
+      return false;
+    }
+    if (membershipCache.ids && Date.now() - membershipCache.at < MEMBERSHIP_TTL_MS) {
+      return membershipCache.ids.includes(id);
+    }
+    try {
+      const ids = await botChannels.list({ includeDms: true });
+      membershipCache.ids = Array.isArray(ids) ? ids : [];
+      membershipCache.at = Date.now();
+    } catch (error) {
+      logger.warn?.('Could not confirm which channels the bot is in; ignoring huddle events', error);
+      return false;
+    }
+    return membershipCache.ids.includes(id);
+  }
+
   function channelRules(channelId) {
     const row = store.getHuddleChannel(channelId);
     if (!row) {
@@ -313,6 +351,15 @@ export function createHuddleTracker({ app, store, client, logger, ownerId = '', 
     if (members.length === 0) {
       return;
     }
+    // Anyone still flagged as inside when the call ends has their interval
+    // closed at the end time we were told about, which is the most generous
+    // reading we can defend. computeHuddleAttendance still marks the huddle
+    // partial so points never quietly depend on the guess.
+    store.closeAllOpenHuddleAttendance(huddle.call_id, huddle.ended_at);
+    const attendance = store.computeHuddleAttendance(huddle.call_id, {
+      startedAt: huddle.started_at,
+      endedAt: huddle.ended_at,
+    });
     let messageStats = null;
     if (huddle.channel_id && huddle.thread_root_ts) {
       try {
@@ -331,9 +378,18 @@ export function createHuddleTracker({ app, store, client, logger, ownerId = '', 
     const awards = computeHuddlePoints({
       huddle,
       members,
+      attendance,
       participantHistory: parseParticipantHistory(huddle),
       messageStats,
     });
+    if (attendance.partial) {
+      store.recordTriggerLog({
+        userId: '',
+        action: 'huddle_attendance_partial',
+        detail: `${huddle.call_id}:${store.countOpenHuddleAttendance(huddle.call_id)}`,
+        channelId: huddle.channel_id || '',
+      });
+    }
     for (const [userId, entry] of awards) {
       store.awardHuddlePoints(userId, entry.points, huddle.channel_id || '');
     }
@@ -344,10 +400,25 @@ export function createHuddleTracker({ app, store, client, logger, ownerId = '', 
 
   async function applyJoin(userId, callId) {
     const joinedAt = nowEpochSeconds();
-    store.setUserHuddleState({ userId, callId, isIn: true });
-    if (!store.getHuddle(callId)) {
-      store.upsertHuddle({ callId, startedAt: joinedAt });
+    const known = store.getHuddle(callId);
+    if (known && !known.channel_id) {
+      // A placeholder for a huddle whose channel we have not confirmed yet.
+      store.setUserHuddleState({ userId, callId, isIn: true });
+      return;
     }
+    if (!known) {
+      // Slack can report a join before the huddle thread message that names the
+      // channel. Hold it as unverified: nothing may be scored, reviewed or shown
+      // for it until a thread message proves the bot is in that channel, and the
+      // placeholder sweep removes it if that never happens.
+      store.upsertHuddle({ callId, startedAt: joinedAt, status: 'unverified' });
+      store.setUserHuddleState({ userId, callId, isIn: true });
+      return;
+    }
+    store.setUserHuddleState({ userId, callId, isIn: true });
+    // Intervals are the real attendance record. The roster row below is only
+    // kept for liveness, because a single first/last pair cannot express a gap.
+    store.openHuddleAttendance(callId, userId, joinedAt);
     store.upsertHuddleMember({
       callId,
       userId,
@@ -364,8 +435,13 @@ export function createHuddleTracker({ app, store, client, logger, ownerId = '', 
   }
 
   async function applyLeave(userId, callId) {
+    const known = store.getHuddle(callId);
+    if (!known?.channel_id) {
+      return;
+    }
     const leftAt = nowEpochSeconds();
     store.setUserHuddleState({ userId, callId: '', isIn: false });
+    store.closeHuddleAttendance(callId, userId, leftAt);
     store.upsertHuddleMember({ callId, userId, firstSeenAt: null, lastSeenAt: leftAt, isIn: false });
     store.recordTriggerLog({
       userId,
@@ -395,27 +471,64 @@ export function createHuddleTracker({ app, store, client, logger, ownerId = '', 
     }
   }
 
-  function handleHuddleThreadMessage(message) {
+  async function handleHuddleThreadMessage(message) {
     const room = message?.room;
     if (room?.call_family !== 'huddle' || !room.id) {
       return;
     }
     const channelId = message.channel || room.channels?.[0] || '';
+    // The invariant, enforced at the only point that can know the channel: a
+    // huddle in a channel Asteria is not in is not recorded, scored, reviewed,
+    // linked, repaired or shown anywhere. It is dropped on the floor.
+    if (!(await isBotChannel(channelId))) {
+      return;
+    }
     const existing = store.getHuddle(room.id);
     const endedAt = room.date_end || null;
     const rules = channelRules(channelId || existing?.channel_id || '');
+    // A placeholder held from a join event is promoted here, because this is the
+    // message that proves which channel the huddle is in and the bot is inside.
     store.upsertHuddle({
       callId: room.id,
       channelId,
       createdBy: room.created_by || '',
       startedAt: room.date_start || 0,
       endedAt,
-      threadRootTs: room.thread_root_ts || message.ts || '',
+      // Only Slack knows the thread root. Falling back to this message's own ts
+      // made the closing message its own thread root, so the review prompt was
+      // posted as a reply to itself. With no root there is no thread to ask in
+      // and the prompt is skipped and logged instead.
+      threadRootTs: room.thread_root_ts || '',
       participantHistory: room.participant_history || [],
       // The thread message is Slack telling us about this huddle, so its own
       // timestamp is when we last heard anything, not the moment we wrote.
       lastSeenAt: slackTsToEpochSeconds(message.ts) || (endedAt ?? 0),
     });
+    if (existing?.status === 'unverified') {
+      // The channel is confirmed, so this huddle is ours and the placeholder can
+      // be promoted. Slack reported joins while it was held, and those were not
+      // recorded as attendance, so they are replayed from the live user state
+      // before anything else looks at this huddle.
+      store.setHuddleStatus(room.id, 'active', null);
+      for (const row of store.listUsersInHuddle(room.id)) {
+        await applyJoin(row.user_id, room.id);
+      }
+      // Slack also tells us, in participant_history, who was in the huddle. That
+      // has no join or leave times, so it is recorded as roster only and never
+      // as attendance: crediting full duration from a list with no times would
+      // invent exactly the kind of overcount that caused this whole problem.
+      for (const userId of room.participant_history || []) {
+        if (userId && !store.getHuddleMember(room.id, userId)) {
+          store.upsertHuddleMember({
+            callId: room.id,
+            userId,
+            firstSeenAt: room.date_start || 0,
+            lastSeenAt: room.date_start || 0,
+            isIn: false,
+          });
+        }
+      }
+    }
     if (!rules.tracking) {
       // The channel has tracking off or paused: record the huddle silently so we
       // still have a timeline, but never announce it, review it or award points.
@@ -432,15 +545,15 @@ export function createHuddleTracker({ app, store, client, logger, ownerId = '', 
         store.setHuddleOptedOut(room.id);
       }
       if (endedAt) {
-        void finalizeHuddle(room.id, endedAt);
+        await finalizeHuddle(room.id, endedAt);
       }
       return;
     }
     if (!existing && !endedAt) {
-      void announceTrackingToThread(store.getHuddle(room.id));
+      await announceTrackingToThread(store.getHuddle(room.id));
     }
     if (endedAt) {
-      void finalizeHuddle(room.id, endedAt);
+      await finalizeHuddle(room.id, endedAt);
     }
   }
 
@@ -502,14 +615,18 @@ export function createHuddleTracker({ app, store, client, logger, ownerId = '', 
    */
   async function reconcileEndedHuddles() {
     const now = nowEpochSeconds();
+    // A huddle with no channel is one the bot cannot prove it is inside, so it is
+    // discarded rather than reconciled. Finalising it would put an invented end
+    // time on a huddle that was never ours and leave it visible.
+    if (store.purgeUnverifiedHuddles(UNVERIFIABLE_QUIET_SECONDS) > 0) {
+      logger.info?.('Purged huddles that were never in a channel the bot is in');
+    }
     for (const huddle of store.listActiveHuddles()) {
       const lastActivity = store.lastHuddleActivityAt(huddle.call_id) || huddle.started_at;
-      if (!huddle.thread_root_ts || !huddle.channel_id) {
-        // A huddle seen only through a user_huddle_changed event has no channel
-        // and no thread, so there is nothing to ask Slack about and nothing that
-        // can ever tell us when it stopped. Left alone these stayed "active"
-        // indefinitely and counted as running for a day. Once it has been quiet
-        // for a long time, close it at the last moment we actually saw someone.
+      if (!huddle.thread_root_ts) {
+        // A huddle with a channel but no thread root cannot be ended by a thread
+        // message, and there is nowhere to ask for its real end time. Once it has
+        // been quiet for a long time, close it at the last moment we saw someone.
         if (now - Math.max(lastActivity, huddle.started_at) >= UNVERIFIABLE_QUIET_SECONDS) {
           const endedAt = Math.max(lastActivity, huddle.started_at + 1);
           if (endedAt > huddle.started_at) {
@@ -1164,11 +1281,13 @@ export function createHuddleTracker({ app, store, client, logger, ownerId = '', 
     });
   });
 
-  app.message((payload) => {
+  app.message(async (payload) => {
     const message = payload.message ?? payload.event ?? payload;
     if (message?.subtype === 'huddle_thread') {
+      // Awaited so the membership check inside can finish before anything else
+      // looks at the huddle.
       try {
-        handleHuddleThreadMessage(message);
+        await handleHuddleThreadMessage(message);
       } catch (error) {
         logger.error('Handle huddle_thread message', error);
       }
@@ -1182,13 +1301,13 @@ export function createHuddleTracker({ app, store, client, logger, ownerId = '', 
     });
   });
 
-  app.event('message_changed', (payload) => {
+  app.event('message_changed', async (payload) => {
     const message = payload?.message;
     if (message?.subtype !== 'huddle_thread' || !message?.room?.id) {
       return;
     }
     try {
-      handleHuddleThreadMessage(message);
+      await handleHuddleThreadMessage(message);
     } catch (error) {
       logger.error('Handle huddle_thread close message', error);
     }

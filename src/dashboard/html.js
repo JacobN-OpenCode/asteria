@@ -1311,7 +1311,9 @@ function loadAdmin() {
       ]
         .map(([k, v]) => '<div><span class="k">' + k + '</span><span class="v">' + v + '</span></div>')
         .join('');
-      $('member-kv').innerHTML = (d.membership || [])
+      // membership arrives as an object keyed by scope, not an array, so it needs
+      // Object.entries before it can be mapped over.
+      $('member-kv').innerHTML = Object.entries(d.membership || {})
         .map(
           ([k, v]) =>
             '<div><span class="k">' + escapeHtml(k) + '</span><span class="v">' + escapeHtml(v) + '</span></div>',

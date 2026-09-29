@@ -1,11 +1,13 @@
 import http from 'node:http';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { DateTime } from 'luxon';
 import { buildStatusRss, readStatusEvents } from '../status/status-core.js';
 import { createDashboardAuth } from './auth.js';
 import { createCachetDirectory } from './cachet.js';
 import { createFlaronDirectory } from './flaron.js';
 import { renderDashboardHtml } from './html.js';
+import { renderHuddlePage } from './huddle-page.js';
 import { resolvePermissions } from './permissions.js';
 import { buildDashboardStats } from './stats.js';
 
@@ -21,10 +23,19 @@ function nowEpochSeconds() {
   return Math.floor(Date.now() / 1000);
 }
 
-export function createDashboardServer({ store, client, botChannels, logger = console, startedAt = Date.now() }) {
+export function createDashboardServer({
+  store,
+  client,
+  botChannels,
+  logger = console,
+  startedAt = Date.now(),
+  // Injectable so tests can drive a huddle page without reaching the network.
+  cachet: injectedCachet = null,
+  flaron: injectedFlaron = null,
+}) {
   const eventsFilePath = process.env.ASTERIA_STATUS_FILE || path.join(repoRoot, 'data', 'status-events.json');
-  const cachet = createCachetDirectory({ logger });
-  const flaron = createFlaronDirectory({ logger });
+  const cachet = injectedCachet || createCachetDirectory({ logger });
+  const flaron = injectedFlaron || createFlaronDirectory({ logger });
   // Flaron will not describe a private channel, so Slack supplies the headcount
   // for those. This has to be the SDK's own method: the equivalent
   // `client.apiCall('conversations.info', …)` answers `unknown_method` on this
@@ -116,6 +127,137 @@ export function createDashboardServer({ store, client, botChannels, logger = con
     return true;
   }
 
+  /**
+   * May this signed in person open this huddle's page?
+   *
+   * Jacob, or somebody who was actually in the huddle. A channel manager is not
+   * automatically allowed: owning a channel is not the same as having been on
+   * the call, and these pages carry the per person breakdown.
+   */
+  function canViewHuddle(callId, auth_) {
+    if (!auth_) {
+      return false;
+    }
+    if (auth_.permissions.isOwner) {
+      return true;
+    }
+    const userId = auth_.session.slack_user_id;
+    if (!userId) {
+      return false;
+    }
+    return store.isHuddleParticipant(callId, userId);
+  }
+
+  // An anonymous request is told to sign in. A signed in request that is not
+  // allowed is told 404, so the response does not confirm the huddle exists.
+  function huddleNotFoundStatus(auth_) {
+    return auth_ ? 404 : 401;
+  }
+
+  function renderHuddleNotFound() {
+    return `<!doctype html><html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="robots" content="noindex,nofollow,noarchive">
+<title>Not found · Asteria</title>
+<link rel="icon" href="/favicon.svg" type="image/svg+xml">
+<style>body{margin:0;min-height:100vh;display:grid;place-items:center;background:#0d1117;color:#c9d1d9;
+font:15px/1.5 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;text-align:center;padding:24px}
+a{color:#2ea043}h1{color:#f0f6fc;font-size:20px;margin:0 0 8px}p{margin:0;font-size:14px}</style>
+</head><body><div><h1>No such huddle</h1>
+<p>If this is your huddle, <a href="/login">sign in with Slack</a> and try again.</p>
+<p style="margin-top:14px;font-size:13px;color:#8b949e">Huddle pages are only visible to Asteria's owner and to
+people who were in the huddle.</p></div></body></html>`;
+  }
+
+  /**
+   * Assemble everything a huddle page shows.
+   *
+   * Names come from Cachet, never a Slack mention, so opening this page does not
+   * notify anybody who was on the call.
+   */
+  async function buildHuddlePageView({ store: huddleStore, cachet: cachetDir, flaron: flaronDir, callId }) {
+    const huddle = huddleStore.getHuddle(callId);
+    const members = huddleStore.listHuddleMembers(callId);
+    const awards = huddleStore.listHuddleAwards(callId);
+    const awardsByUser = new Map(awards.map((award) => [award.userId, award]));
+
+    // Attendance comes from presence intervals, so a person who left and came
+    // back shows the time they actually spent rather than the whole call. The
+    // member roster is only a fallback for huddles recorded before intervals.
+    const attendance = huddleStore.computeHuddleAttendance(callId, {
+      startedAt: huddle.started_at,
+      endedAt: huddle.ended_at,
+    });
+    const attendanceByUser = new Map(attendance.participants.map((entry) => [entry.userId, entry]));
+
+    const participants = [
+      ...attendance.participants.map((entry) => ({
+        userId: entry.userId,
+        durationSeconds: entry.partial ? null : entry.seconds,
+        provableSeconds: entry.seconds,
+        partial: entry.partial,
+        points: awardsByUser.get(entry.userId)?.points ?? 0,
+        reasons: awardsByUser.get(entry.userId)?.reasons ?? [],
+      })),
+      ...members
+        .filter((member) => !attendanceByUser.has(member.user_id))
+        .map((member) => ({
+          userId: member.user_id,
+          durationSeconds:
+            member.first_seen_at != null && member.last_seen_at != null
+              ? Math.max(0, member.last_seen_at - member.first_seen_at)
+              : huddle.ended_at && member.first_seen_at
+                ? Math.max(0, huddle.ended_at - member.first_seen_at)
+                : null,
+          provableSeconds: 0,
+          partial: true,
+          points: awardsByUser.get(member.user_id)?.points ?? 0,
+          reasons: awardsByUser.get(member.user_id)?.reasons ?? [],
+        })),
+    ].sort((a, b) => b.points - a.points || (b.provableSeconds || 0) - (a.provableSeconds || 0));
+
+    const ids = participants.map((participant) => participant.userId);
+    const [profiles, flaronRecord] = await Promise.all([
+      cachetDir.list(ids),
+      huddle.channel_id ? flaronDir.fetchChannel(huddle.channel_id).catch(() => null) : Promise.resolve(null),
+    ]);
+    for (const participant of participants) {
+      participant.name = profiles[participant.userId]?.displayName || participant.userId;
+      participant.avatarUrl = profiles[participant.userId]?.imageUrl || '';
+    }
+
+    const timezone = huddleStore.getSettings().timezone || 'UTC';
+    const isLive = huddle.status === 'active' && !huddle.ended_at;
+    const durationSeconds = huddle.ended_at && huddle.started_at ? Math.max(0, huddle.ended_at - huddle.started_at) : 0;
+
+    return {
+      huddle,
+      participants,
+      channel: {
+        // Flaron is the authority on the name. If it cannot answer, fall back to
+        // the raw id rather than a Slack channel link, which would render as
+        // "#unknown" in some contexts.
+        name: flaronRecord?.name || '',
+        isPrivate: huddleStore.getHuddleChannel(huddle.channel_id || '')?.is_private ?? -1,
+      },
+      totalPoints: awards.reduce((sum, award) => sum + award.points, 0),
+      startedLabel: huddle.started_at
+        ? DateTime.fromSeconds(huddle.started_at, { zone: timezone }).toFormat('d LLL yyyy, HH:mm')
+        : 'unknown',
+      endedLabel:
+        huddle.ended_at && !isLive
+          ? DateTime.fromSeconds(huddle.ended_at, { zone: timezone }).toFormat('d LLL yyyy, HH:mm')
+          : '',
+      durationSeconds: isLive ? Math.max(0, Math.floor(Date.now() / 1000) - (huddle.started_at || 0)) : durationSeconds,
+      isLive,
+      reconstructed: awards.some((award) => award.reasons.some((reason) => reason === 'backfilled')),
+      // Some attendance could not be proven, so the page says so rather than
+      // presenting a partial record as if it were complete.
+      attendancePartial: attendance.partial || participants.every((participant) => participant.partial),
+      timezone,
+    };
+  }
+
   function parseOwnerIds(raw) {
     if (Array.isArray(raw)) {
       return raw;
@@ -152,7 +294,7 @@ export function createDashboardServer({ store, client, botChannels, logger = con
         const owners = parseOwnerIds(c.owner_ids);
         return {
           channelId: c.channel_id,
-          name: c.name || names.get(c.channel_id) || c.channel_id,
+          name: c.name || names[c.channel_id] || c.channel_id,
           enabled: Number(c.enabled) === 1,
           auto_replies: Number(c.auto_replies) === 1,
           restrict_triggers: Number(c.restrict_triggers) === 1,
@@ -168,7 +310,7 @@ export function createDashboardServer({ store, client, botChannels, logger = con
       channels,
       unconfigured: inBot
         .filter((id) => !configuredIds.has(id))
-        .map((id) => ({ channelId: id, name: names.get(id) || '' })),
+        .map((id) => ({ channelId: id, name: names[id] || '' })),
     };
   }
 
@@ -218,7 +360,7 @@ export function createDashboardServer({ store, client, botChannels, logger = con
         'channels the bot is in': String(inBot.length),
         'with settings here': String([...configured].filter((id) => inBot.includes(id)).length),
         'tracked but unconfigured': String([...configured].filter((id) => !inBot.includes(id)).length),
-        names: inBot.map((id) => `#${names.get(id) || id}`).join(', ') || 'none',
+        names: inBot.map((id) => `#${names[id] || id}`).join(', ') || 'none',
       },
     };
   }
@@ -452,6 +594,59 @@ export function createDashboardServer({ store, client, botChannels, logger = con
       }
       res.writeHead(302, { location: cachet.avatarUrl(slackUserId), 'cache-control': 'public, max-age=86400' });
       res.end();
+      return;
+    }
+
+    // A huddle's own page, at /<call id>, and the live feed behind it.
+    //
+    // These are not linked from anywhere public. The rule is Jacob or somebody
+    // who was actually in the huddle. Slack's link unfetcher has no session
+    // cookie, so pasting one of these links into a channel shows nothing to
+    // anyone who is not already allowed to see it.
+    const huddleLiveMatch = /^\/api\/huddle\/([^/]+)\/live$/.exec(route);
+    if (huddleLiveMatch && method === 'GET') {
+      const callId = decodeURIComponent(huddleLiveMatch[1]);
+      if (!canViewHuddle(callId, auth_)) {
+        sendJson(res, huddleNotFoundStatus(auth_), { error: 'No such huddle' });
+        return;
+      }
+      const huddle = store.getHuddle(callId);
+      if (!huddle) {
+        sendJson(res, 404, { error: 'No such huddle' });
+        return;
+      }
+      const isLive = huddle.status === 'active' && !huddle.ended_at;
+      const awards = store.listHuddleAwards(callId);
+      sendJson(res, 200, {
+        callId,
+        isLive,
+        participants: store.listHuddleMembers(callId).length,
+        totalPoints: awards.reduce((sum, award) => sum + award.points, 0),
+      });
+      return;
+    }
+
+    const huddlePageMatch = /^\/(R[0-9A-Z]{6,20})$/.exec(route);
+    if (huddlePageMatch && method === 'GET') {
+      const callId = huddlePageMatch[1];
+      if (!canViewHuddle(callId, auth_)) {
+        // Not signed in goes to sign in, which is also what makes a Slack
+        // unfurl harmless. Signed in but not allowed gets a 404 rather than a
+        // 403, so the page does not confirm that the huddle exists.
+        if (!auth_) {
+          redirect(res, `/login?next=${encodeURIComponent(route)}`);
+          return;
+        }
+        sendHtml(res, 404, renderHuddleNotFound());
+        return;
+      }
+      const huddle = store.getHuddle(callId);
+      if (!huddle) {
+        sendHtml(res, 404, renderHuddleNotFound());
+        return;
+      }
+      const page = await buildHuddlePageView({ store, cachet, flaron, callId });
+      sendHtml(res, 200, renderHuddlePage(page));
       return;
     }
 
