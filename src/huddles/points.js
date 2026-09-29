@@ -21,7 +21,13 @@ export function parseParticipantHistory(huddle) {
  * was being tracked. Returns a Map of userId -> { points, reasons } so callers
  * can persist the total (`awardHuddlePoints`) or log it.
  */
-export function computeHuddlePoints({ huddle, members = [], participantHistory = [], messageStats = null }) {
+export function computeHuddlePoints({
+  huddle,
+  members = [],
+  attendance = null,
+  participantHistory = [],
+  messageStats = null,
+}) {
   const awards = new Map();
   const addPoints = (userId, points, reason) => {
     if (!userId) {
@@ -37,10 +43,12 @@ export function computeHuddlePoints({ huddle, members = [], participantHistory =
     return new Map();
   }
 
-  const stats = computeHuddleStats({ huddle, members, participantHistory });
-  const ranked = stats.participants.filter((participant) => participant.durationSeconds != null);
+  const stats = computeHuddleStats({ huddle, members, attendance, participantHistory });
+  // Points follow provable time, so a member whose join never closed still
+  // scores the stretches we can demonstrate and nothing beyond them.
+  const ranked = stats.participants.filter((participant) => (participant.provableSeconds ?? 0) > 0);
   const durationAwards = ranked.map((participant) => {
-    const durationMinutes = Math.max(1, Math.floor(participant.durationSeconds / 60));
+    const durationMinutes = Math.max(1, Math.floor(participant.provableSeconds / 60));
     return { userId: participant.userId, durationMinutes };
   });
 
@@ -48,7 +56,10 @@ export function computeHuddlePoints({ huddle, members = [], participantHistory =
     addPoints(userId, durationMinutes * POINTS_PER_MINUTE, `${durationMinutes}m`);
   });
 
-  ranked.forEach((participant, index) => {
+  // Rank bonuses go only to people whose attendance is fully accounted for, so
+  // a partial record can never win a place off someone else's missing events.
+  const fullyTracked = ranked.filter((participant) => !participant.partial);
+  fullyTracked.forEach((participant, index) => {
     const bonus = RANK_BONUS[index];
     if (bonus) {
       addPoints(participant.userId, bonus, `rank ${index + 1}`);
