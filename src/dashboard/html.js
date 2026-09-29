@@ -6,13 +6,19 @@ const ACCENT_BRIGHT = '#2ea043';
  * polls /api/stats: it keeps the first paint instant and needs no build step, while
  * the numbers still move while you watch them.
  */
-export function renderDashboardHtml({ oauthConfigured = false, signedIn = false, role = null, baseUrl = '' } = {}) {
+export function renderDashboardHtml({
+  oauthConfigured = false,
+  signedIn = false,
+  role = null,
+  baseUrl = '',
+  view = 'home',
+} = {}) {
   return `<!doctype html>
 <html lang="en" data-base="${escapeHtml(baseUrl)}" data-oauth="${oauthConfigured ? '1' : '0'}">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Asteria, live dashboard</title>
+<title>Asteria, ${VIEWS[view]?.title || VIEWS.home.title}</title>
 <meta name="color-scheme" content="dark">
 <link rel="icon" href="data:image/svg+xml,${encodeURIComponent(STAR_FAVICON)}">
 <style>${STYLES}</style>
@@ -24,6 +30,7 @@ export function renderDashboardHtml({ oauthConfigured = false, signedIn = false,
     <span class="brand-text">Asteria<em>live status</em></span>
   </a>
   <div class="topbar-right">
+    <button class="btn ghost" type="button" id="about-open">What is this?</button>
     <span class="live" title="refreshes every 5 seconds"><i></i>live</span>
     <span class="uptime-pill" id="uptime-pill"><span class="skel skel-sm"></span></span>
     ${
@@ -35,11 +42,83 @@ export function renderDashboardHtml({ oauthConfigured = false, signedIn = false,
   </div>
 </header>
 
+${renderTabs(view)}
+
 <main>
-  <section class="hero">
+${view === 'home' ? homeView() : view === 'j-log' ? jLogView() : view === 'huddles' ? huddlesView() : adminView()}
+</main>
+<div class="modal hidden" id="channel-modal" role="dialog" aria-modal="true" aria-labelledby="cm-title">
+  <div class="modal-scrim" id="cm-scrim"></div>
+  <div class="modal-card" id="cm-card"></div>
+</div>
+
+<div class="modal hidden" id="about-modal" role="dialog" aria-modal="true" aria-labelledby="about-title">
+  <div class="modal-scrim" id="about-scrim"></div>
+  <div class="modal-card about-card">
+    <div class="cm-head">
+      <h2 class="cm-title" id="about-title"><span class="mark">${STAR_SVG}</span><span>What Asteria does</span></h2>
+      <button class="cm-close" type="button" id="about-close" aria-label="Close">&#215;</button>
+    </div>
+
+    <p class="about-lede">Asteria sits in your Slack channels and keeps score of the huddles that happen in them.
+      This page is the window into what it has seen.</p>
+
+    <h3 class="about-h">A huddle is a voice call</h3>
+    <p class="about-p">A huddle is Slack's built-in voice chat, the headphones icon in a channel. Anyone can start
+      one and anyone can pop in and out. Asteria does not record audio. It only reads the roster Slack already
+      publishes: who was in the call, and roughly when.</p>
+
+    <h3 class="about-h">How it keeps track</h3>
+    <p class="about-p">When people join or leave, Slack sends Asteria an event. Slack also drops some of those
+      events, so a huddle it has not heard from for a minute gets checked directly against Slack for the real
+      end time. That is why a duration shown here is measured, and not just "when the bot happened to notice".</p>
+
+    <h3 class="about-h">Where the numbers come from</h3>
+    <ul class="about-list">
+      <li><b>People seen</b> counts distinct Slack ids ever seen in a huddle the bot could verify, across the channels it is in.</li>
+      <li><b>Points</b> reward showing up. A short huddle with six people who stayed beats a long one where two joined and left. Minimum and maximum values are capped so a huddle cannot be farmed by sitting in it.</li>
+      <li><b>Channels the bot is in</b> is the only scope. Slack sends the bot huddle events from the whole workspace, so most of what it sees happens in channels it was never in. Those are deliberately left out of every number here.</li>
+    </ul>
+
+    <h3 class="about-h">Why the bot sometimes says nothing</h3>
+    <p class="about-p">Silence is usually deliberate rather than broken. It does not answer in a channel where
+      huddle replies have been switched off, and where only channel managers may trigger it, anyone else asking
+      gets a short note saying so rather than being ignored. It will not start a conversation with you unprompted
+      either: if a huddle ended with nowhere to ask about it, it stays quiet and records that it did.</p>
+
+    <h3 class="about-h">Getting in</h3>
+    <p class="about-p">Sign in with Slack, or DM the bot the word <code>dashboard</code> and it will send you a
+      single-use link. There is no password and no account to make.</p>
+
+    <div class="about-foot">
+      <a class="btn" href="/health">Service health</a>
+      <a class="btn ghost" href="/rss.xml">RSS feed</a>
+    </div>
+  </div>
+</div>
+
+<footer>
+  <span>Asteria, <a href="/health">health</a>, <a href="/rss.xml">rss</a></span>
+  <span class="muted" id="foot-updated"><span class="skel skel-sm"></span></span>
+</footer>
+
+<script>${SCRIPT}
+if (document.getElementById('about-modal')) {
+  if ('${view}' === 'j-log') { loadJLog(); wireJLog(); }
+  else if ('${view}' === 'huddles') { loadHuddles(); wireHuddles(); }
+  else if ('${view}' === 'admin') { loadAdmin(); }
+}
+</script>
+</body>
+</html>`;
+}
+
+function homeView() {
+  return `  <section class="hero">
     <p class="kicker">personal channel companion</p>
     <h1>Everything Asteria is doing, <span class="accent">right now</span>.</h1>
-    <p class="sub">Huddles it watched, points it handed out, and how long it has been standing by.</p>
+    <p class="sub">Huddles it watched, points it handed out, and how long it has been standing by.
+      New here? <button class="linkish" type="button" id="about-open-2">What Asteria does</button>.</p>
   </section>
 
   <section class="stat-strip" id="stat-strip">
@@ -86,21 +165,178 @@ export function renderDashboardHtml({ oauthConfigured = false, signedIn = false,
     <header class="panel-head"><h2>Activity</h2><span class="tag">owner only</span></header>
     <ul class="log" id="log"></ul>
   </section>
-</main>
+`;
+}
 
-<div class="modal hidden" id="channel-modal" role="dialog" aria-modal="true" aria-labelledby="cm-title">
-  <div class="modal-scrim" id="cm-scrim"></div>
-  <div class="modal-card" id="cm-card"></div>
-</div>
+const TABS = [
+  { id: 'home', label: 'Dashboard' },
+  { id: 'j-log', label: 'j-log manager' },
+  { id: 'huddles', label: 'Huddle customisation' },
+  { id: 'admin', label: 'Admin panel' },
+];
 
-<footer>
-  <span>Asteria, <a href="/health">health</a>, <a href="/rss.xml">rss</a></span>
-  <span class="muted" id="foot-updated"><span class="skel skel-sm"></span></span>
-</footer>
+const VIEWS = {
+  home: { title: 'live dashboard' },
+  'j-log': { title: 'j-log manager' },
+  huddles: { title: 'huddle customisation' },
+  admin: { title: 'admin panel' },
+};
 
-<script>${SCRIPT}</script>
-</body>
-</html>`;
+function renderTabs(view) {
+  return `<nav class="tabs" aria-label="Sections">
+${TABS.map(
+  (tab) =>
+    `    <a class="tab${tab.id === view ? ' on' : ''}" href="${tab.id === 'home' ? '/' : `/${tab.id}`}"${
+      tab.id === view ? ' aria-current="page"' : ''
+    }>${tab.id === 'home' ? '<span class="dot"></span>' : ''}${tab.label}</a>`,
+).join('\n')}
+  </nav>`;
+}
+
+function jLogView() {
+  return `  <section class="hero">
+    <p class="kicker">j-log manager</p>
+    <h1>The daily <span class="accent">standup</span> channel, on rails.</h1>
+    <p class="sub">Draft the update, set the question that goes out each morning, and check what has already
+      been sent. Saving here changes what the bot posts; it does not post anything until you send it.</p>
+  </section>
+
+  <div class="grid">
+    <section class="panel">
+      <header class="panel-head"><h2>Daily update</h2><span class="tag" id="draft-tag">draft</span></header>
+      <div class="form">
+        <div class="field">
+          <label for="f-main">Main update</label>
+          <textarea id="f-main" rows="7" placeholder="What happened?"></textarea>
+          <span class="hint">Posted to the channel at the send time below.</span>
+        </div>
+        <div class="field">
+          <label for="f-song">Song</label>
+          <input type="text" id="f-song" placeholder="Song of the day">
+        </div>
+        <div class="field">
+          <label for="f-event">Event</label>
+          <input type="text" id="f-event" placeholder="Anything coming up">
+        </div>
+        <div class="row-actions">
+          <button class="btn" type="button" id="draft-save">Save draft</button>
+          <button class="btn ghost" type="button" id="draft-clear">Clear</button>
+          <span class="saved" id="draft-saved">saved</span>
+        </div>
+      </div>
+    </section>
+
+    <div class="side">
+      <section class="panel">
+        <header class="panel-head"><h2>Daily question</h2></header>
+        <div class="form">
+          <div class="switchrow">
+            <div><div class="t">Ask a question each morning</div><div class="d">Posted at the time set below.</div></div>
+            <label class="switch"><input type="checkbox" id="q-enabled"><i></i></label>
+          </div>
+          <div class="field">
+            <label for="q-time">Send time</label>
+            <input type="time" id="q-time" value="09:00">
+          </div>
+          <div class="field">
+            <label for="q-prompt">Prompt handed to the generator</label>
+            <textarea id="q-prompt" rows="4"></textarea>
+            <span class="hint">Asteria writes the question itself from this.</span>
+          </div>
+          <div class="field">
+            <label for="q-reply">Reply nudge</label>
+            <input type="text" id="q-reply" placeholder="Reply to this message in a thread!">
+          </div>
+          <div class="switchrow">
+            <div><div class="t">Fold it into the daily update</div><div class="d">One post instead of two.</div></div>
+            <label class="switch"><input type="checkbox" id="q-include"><i></i></label>
+          </div>
+          <div class="row-actions">
+            <button class="btn" type="button" id="q-save">Save question settings</button>
+            <span class="saved" id="q-saved">saved</span>
+          </div>
+        </div>
+      </section>
+
+      <section class="panel">
+        <header class="panel-head"><h2>Reminder</h2></header>
+        <div class="form">
+          <div class="switchrow">
+            <div><div class="t">Nudge the channel</div><div class="d">If the update has not gone out yet.</div></div>
+            <label class="switch"><input type="checkbox" id="r-enabled"><i></i></label>
+          </div>
+          <div class="field">
+            <label for="r-time">Reminder time</label>
+            <input type="time" id="r-time" value="17:00">
+          </div>
+          <div class="switchrow">
+            <div><div class="t">Reply in a thread</div><div class="d">Keeps the channel readable.</div></div>
+            <label class="switch"><input type="checkbox" id="r-thread"><i></i></label>
+          </div>
+          <div class="row-actions">
+            <button class="btn" type="button" id="r-save">Save reminder</button>
+            <span class="saved" id="r-saved">saved</span>
+          </div>
+        </div>
+      </section>
+
+      <section class="panel">
+        <header class="panel-head"><h2>Recent questions</h2><span class="tag">last 5</span></header>
+        <ul class="log" id="q-history"><li class="none-slot"><div class="none"><span class="skel" style="width:120px"></span></div></li></ul>
+      </section>
+    </div>
+  </div>`;
+}
+
+function huddlesView() {
+  return `  <section class="hero">
+    <p class="kicker">huddle customisation</p>
+    <h1>How Asteria behaves, <span class="accent">per channel</span>.</h1>
+    <p class="sub">Turn tracking off to stop the announcements, reviews and points for a channel without
+      muting the bot itself, or restrict it so only the managers below can ask it something.</p>
+  </section>
+
+  <div class="warnrow" id="unconfigured-note" hidden>
+    <span class="ic">!</span>
+    <span><b id="unconfigured-text"></b></span>
+  </div>
+
+  <section class="panel" style="margin-top:14px">
+    <header class="panel-head"><h2>Channels</h2><span class="tag" id="hc-tag"><span class="skel skel-sm"></span></span></header>
+    <div class="cardlist" id="hc-list">
+      <div class="cardrow"><span class="skel" style="width:180px"></span></div>
+    </div>
+  </section>`;
+}
+
+function adminView() {
+  return `  <section class="hero">
+    <p class="kicker">admin panel</p>
+    <h1>What the bot can <span class="accent">actually see</span>.</h1>
+    <p class="sub">Owner only. This is the honest state of the integration: which channels it is in, what
+      Slack will not tell it, and the huddles it recorded but could never place.</p>
+  </section>
+
+  <div class="grid">
+    <section class="panel">
+      <header class="panel-head"><h2>Slack permissions</h2><span class="tag">live</span></header>
+      <div class="cardlist" id="scope-list">
+        <div class="cardrow"><span class="skel" style="width:200px"></span></div>
+      </div>
+    </section>
+
+    <div class="side">
+      <section class="panel">
+        <header class="panel-head"><h2>Unplaceable huddles</h2><span class="tag" id="orphan-tag">owner only</span></header>
+        <p class="emptynote" id="orphan-note">Loading.</p>
+        <dl class="kvlist" id="orphan-kv"></dl>
+      </section>
+      <section class="panel">
+        <header class="panel-head"><h2>Bot membership</h2></header>
+        <dl class="kvlist" id="member-kv"></dl>
+      </section>
+    </div>
+  </div>`;
 }
 
 function statCell(id, label, hint) {
@@ -323,6 +559,86 @@ footer{display:flex;justify-content:space-between;align-items:center;gap:12px;fl
   max-width:1180px;margin:0 auto;padding:16px clamp(16px,4vw,36px) 32px;
   border-top:1px solid var(--line);font-size:12.5px;color:var(--ink-3)}
 @media (prefers-reduced-motion:reduce){*{animation:none !important;transition:none !important}}
+
+/* inline text button, reads as a link but behaves as a button */
+.linkish{background:none;border:0;padding:0;font:inherit;color:var(--accent-bright);cursor:pointer;
+  text-decoration:underline;text-underline-offset:2px}
+.linkish:hover{color:var(--ink)}
+
+/* tab bar */
+.tabs{display:flex;gap:2px;max-width:1180px;margin:0 auto;padding:0 clamp(16px,4vw,36px);
+  border-bottom:1px solid var(--line);overflow-x:auto;scrollbar-width:none}
+.tabs::-webkit-scrollbar{display:none}
+.tab{display:inline-flex;align-items:center;gap:7px;flex:0 0 auto;padding:11px 14px;
+  font-size:13px;font-weight:600;color:var(--ink-3);background:none;border:0;border-bottom:2px solid transparent;
+  cursor:pointer;text-decoration:none;margin-bottom:-1px;white-space:nowrap}
+.tab:hover{color:var(--ink);text-decoration:none;background:var(--surface)}
+.tab.on{color:var(--ink);border-bottom-color:var(--accent-bright)}
+.tab .dot{width:5px;height:5px;border-radius:50%;background:var(--accent-bright);flex:0 0 auto}
+
+/* explainer modal */
+.about-card{width:min(640px,100%)}
+.about-lede{color:var(--ink-2);font-size:14.5px;margin:0 0 18px}
+.about-h{font-size:11px;letter-spacing:.14em;text-transform:uppercase;color:var(--ink-2);font-weight:700;
+  margin:20px 0 7px}
+.about-h:first-of-type{margin-top:0}
+.about-p{color:var(--ink-3);font-size:13.5px;margin:0}
+.about-list{margin:0;padding-left:18px;color:var(--ink-3);font-size:13.5px}
+.about-list li{margin-bottom:7px}
+.about-list b{color:var(--ink-2)}
+.about-card code{font-family:var(--mono);font-size:12px;background:var(--raised);
+  border-radius:4px;padding:1px 5px;color:var(--ink-2)}
+.about-foot{display:flex;gap:8px;flex-wrap:wrap;margin-top:22px;padding-top:16px;border-top:1px solid var(--line-soft)}
+
+/* settings pages */
+.form{display:grid;gap:14px}
+.field{display:grid;gap:5px}
+.field label{font-size:12px;font-weight:600;color:var(--ink-2)}
+.field .hint{font-size:11.5px;color:var(--ink-3);line-height:1.45}
+.field input[type=text],.field input[type=time],.field input[type=number],.field textarea,.field select{
+  font:inherit;font-size:13.5px;color:var(--ink);background:var(--bg);border:1px solid var(--line);
+  border-radius:var(--r-sm);padding:8px 10px;width:100%}
+.field textarea{font-family:var(--mono);font-size:12.5px;line-height:1.5;resize:vertical;min-height:76px}
+.field input:focus,.field textarea:focus,.field select:focus{outline:none;border-color:var(--accent)}
+.switchrow{display:flex;align-items:center;justify-content:space-between;gap:14px;
+  padding:11px 13px;background:var(--raised);border-radius:var(--r-sm)}
+.switchrow .t{font-size:13.5px;font-weight:600}
+.switchrow .d{font-size:11.5px;color:var(--ink-3);margin-top:2px}
+.switch{position:relative;width:38px;height:22px;flex:0 0 auto}
+.switch input{position:absolute;inset:0;opacity:0;margin:0;cursor:pointer}
+.switch i{position:absolute;inset:0;background:var(--line);border-radius:999px;transition:background .15s;
+  pointer-events:none}
+.switch i::after{content:'';position:absolute;top:3px;left:3px;width:16px;height:16px;border-radius:50%;
+  background:#fff;transition:transform .15s}
+.switch input:checked+i{background:var(--accent)}
+.switch input:checked+i::after{transform:translateX(16px)}
+.switch input:focus-visible+i{box-shadow:0 0 0 3px rgba(46,160,67,.35)}
+.row-actions{display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-top:4px}
+.saved{font-size:12px;color:var(--accent-bright);opacity:0;transition:opacity .2s}
+.saved.on{opacity:1}
+.cardlist{display:grid;gap:10px}
+.cardrow{background:var(--raised);border-radius:var(--r-sm);padding:13px}
+.cardrow .hd{display:flex;align-items:center;justify-content:space-between;gap:10px;margin-bottom:3px}
+.cardrow .nm{font-size:14px;font-weight:620;display:flex;align-items:center;gap:7px;min-width:0}
+.cardrow .nm span{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.cardrow .id{font-family:var(--mono);font-size:11px;color:var(--ink-3)}
+.cardrow .grid2{display:grid;gap:8px;margin-top:11px}
+.owners{display:flex;gap:6px;flex-wrap:wrap;margin-top:9px}
+.ownerchip{display:inline-flex;align-items:center;gap:6px;background:var(--surface);
+  border-radius:999px;padding:3px 5px 3px 3px;font-size:11.5px}
+.ownerchip img{width:18px;height:18px;border-radius:50%}
+.ownerchip button{background:none;border:0;color:var(--ink-3);cursor:pointer;padding:0 3px;font:inherit;line-height:1}
+.ownerchip button:hover{color:var(--red)}
+.emptynote{color:var(--ink-3);font-size:13px;padding:4px 0}
+.kvlist{display:grid;gap:1px;background:var(--line-soft);border-radius:var(--r-sm);overflow:hidden}
+.kvlist>div{display:flex;justify-content:space-between;gap:14px;background:var(--raised);padding:10px 13px;font-size:13px}
+.kvlist dt,.kvlist .k{color:var(--ink-3)}
+.kvlist .v{font-family:var(--mono);font-size:12.5px;text-align:right;word-break:break-word}
+.warnrow{display:flex;gap:9px;align-items:flex-start;background:rgba(248,81,73,.08);
+  box-shadow:0 0 0 1px rgba(248,81,73,.25);border-radius:var(--r-sm);padding:11px 13px;
+  font-size:12.5px;color:var(--ink-2);line-height:1.5}
+.warnrow b{color:var(--ink)}
+.warnrow .ic{color:var(--red);flex:0 0 auto;font-weight:700}
 `;
 
 const SCRIPT = `
@@ -717,6 +1033,293 @@ document.addEventListener('click', function (event) {
 document.addEventListener('keydown', function (event) {
   if (event.key === 'Escape') closeChannelModal();
 });
+
+/* ---------- explainer popup ---------- */
+function openAbout() {
+  $('about-modal').classList.remove('hidden');
+  $('about-close').focus();
+}
+function closeAbout() {
+  $('about-modal').classList.add('hidden');
+}
+for (const id of ['about-open', 'about-open-2']) {
+  const el = $(id);
+  if (el) el.addEventListener('click', openAbout);
+}
+$('about-close').addEventListener('click', closeAbout);
+$('about-scrim').addEventListener('click', closeAbout);
+document.addEventListener('keydown', function (event) {
+  if (event.key === 'Escape' && !$('about-modal').classList.contains('hidden')) {
+    closeAbout();
+  }
+});
+
+/* ---------- settings pages ---------- */
+const post = (url, body) =>
+  fetch(base + url, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify(body),
+  }).then((r) => (r.ok ? r.json() : Promise.reject(new Error('save failed'))));
+
+function flash(id) {
+  const el = $(id);
+  if (!el) return;
+  el.classList.add('on');
+  setTimeout(() => el.classList.remove('on'), 1600);
+}
+
+const setVal = (id, value) => {
+  const el = $(id);
+  if (el) el.value = value ?? '';
+};
+const setChecked = (id, value) => {
+  const el = $(id);
+  if (el) el.checked = !!value;
+};
+const setText = (id, value) => {
+  const el = $(id);
+  if (el) el.textContent = value ?? '';
+};
+
+function loadJLog() {
+  fetch(base + '/api/j-log')
+    .then((r) => r.json())
+    .then((d) => {
+      const s = d.settings || {};
+      setVal('f-main', d.draft?.main_update_text);
+      setVal('f-song', d.draft?.song_text);
+      setVal('f-event', d.draft?.event_text);
+      setText('draft-tag', d.draft?.main_update_text ? 'has a draft' : 'empty');
+
+      setChecked('q-enabled', s.daily_question_enabled);
+      setVal('q-time', s.daily_question_send_time);
+      setVal('q-prompt', s.daily_question_prompt);
+      setVal('q-reply', s.daily_question_reply_text);
+      setChecked('q-include', s.daily_question_include_in_daily_update);
+
+      setChecked('r-enabled', s.daily_update_reminder_enabled);
+      setVal('r-time', s.daily_update_reminder_time);
+      setChecked('r-thread', s.daily_update_thread_enabled);
+
+      const list = d.recentQuestions || [];
+      $('q-history').innerHTML = list.length
+        ? list
+            .map(
+              (q) =>
+                '<li><div class="lrow"><span class="lwhen">' +
+                escapeHtml((q.sent_at_utc || q.local_date || '').slice(0, 10)) +
+                '</span><span class="ltext">' +
+                escapeHtml(q.question_text || '') +
+                '</span></div></li>',
+            )
+            .join('')
+        : '<li class="none-slot"><div class="none">No questions sent yet.</div></li>';
+    })
+    .catch(() => {});
+}
+
+function wireJLog() {
+  $('draft-save').addEventListener('click', () =>
+    post('/api/j-log/draft', {
+      main_update_text: $('f-main').value,
+      song_text: $('f-song').value,
+      event_text: $('f-event').value,
+    })
+      .then(() => {
+        flash('draft-saved');
+        setText('draft-tag', 'has a draft');
+      })
+      .catch(() => {}),
+  );
+  $('draft-clear').addEventListener('click', () =>
+    post('/api/j-log/draft', { clear: true })
+      .then(() => {
+        setVal('f-main', '');
+        setVal('f-song', '');
+        setVal('f-event', '');
+        flash('draft-saved');
+        setText('draft-tag', 'empty');
+      })
+      .catch(() => {}),
+  );
+  $('q-save').addEventListener('click', () =>
+    post('/api/j-log/settings', {
+      daily_question_enabled: $('q-enabled').checked ? 1 : 0,
+      daily_question_send_time: $('q-time').value,
+      daily_question_prompt: $('q-prompt').value,
+      daily_question_reply_text: $('q-reply').value,
+      daily_question_include_in_daily_update: $('q-include').checked ? 1 : 0,
+    })
+      .then(() => flash('q-saved'))
+      .catch(() => {}),
+  );
+  $('r-save').addEventListener('click', () =>
+    post('/api/j-log/settings', {
+      daily_update_reminder_enabled: $('r-enabled').checked ? 1 : 0,
+      daily_update_reminder_time: $('r-time').value,
+      daily_update_thread_enabled: $('r-thread').checked ? 1 : 0,
+    })
+      .then(() => flash('r-saved'))
+      .catch(() => {}),
+  );
+}
+
+function channelCard(c) {
+  return (
+    '<div class="cardrow" data-channel="' +
+    escapeHtml(c.channelId) +
+    '">' +
+    '<div class="hd"><div class="nm"><span>' +
+    escapeHtml(c.name || c.channelId) +
+    '</span></div><span class="id">' +
+    escapeHtml(c.channelId) +
+    '</span></div>' +
+    '<div class="grid2">' +
+    '<div class="switchrow"><div><div class="t">Track huddles</div><div class="d">Announcements, reviews and points.</div></div>' +
+    '<label class="switch"><input type="checkbox" data-flag="enabled"' +
+    (c.enabled ? ' checked' : '') +
+    '><i></i></label></div>' +
+    '<div class="switchrow"><div><div class="t">Answer when mentioned</div><div class="d">Turning this off silences the bot in the channel.</div></div>' +
+    '<label class="switch"><input type="checkbox" data-flag="auto_replies"' +
+    (c.auto_replies ? ' checked' : '') +
+    '><i></i></label></div>' +
+    '<div class="switchrow"><div><div class="t">Managers only</div><div class="d">Everyone else who asks is told why, not ignored.</div></div>' +
+    '<label class="switch"><input type="checkbox" data-flag="restrict_triggers"' +
+    (c.restrict_triggers ? ' checked' : '') +
+    '><i></i></label></div>' +
+    '<div class="switchrow"><div><div class="t">Paused</div><div class="d">Stops everything until ' +
+    escapeHtml(c.pausedUntilLabel || 'never') +
+    '</div></div>' +
+    '<label class="switch"><input type="checkbox" data-flag="paused"' +
+    (c.paused ? ' checked' : '') +
+    '><i></i></label></div>' +
+    '</div>' +
+    '<div class="owners"><span class="id" style="align-self:center">managers</span>' +
+    (c.owners || [])
+      .map(
+        (o) =>
+          '<span class="ownerchip"><img src="' +
+          base +
+          '/avatar?u=' +
+          encodeURIComponent(o.id) +
+          '" alt="">' +
+          escapeHtml(o.name || o.id) +
+          '<button type="button" data-remove-owner="' +
+          escapeHtml(o.id) +
+          '" title="remove">&times;</button></span>',
+      )
+      .join('') +
+    '<span class="ownerchip" style="padding-right:8px"><input type="text" placeholder="U0ABC123" data-add-owner style="width:88px;background:transparent;border:0;color:inherit;font:inherit;font-size:11.5px;outline:none">+ add</span>' +
+    '</div>' +
+    '<div class="row-actions"><span class="saved" data-saved> saved</span></div>' +
+    '</div>'
+  );
+}
+
+function loadHuddles() {
+  fetch(base + '/api/huddles/config')
+    .then((r) => r.json())
+    .then((d) => {
+      const note = $('unconfigured-note');
+      if (d.unconfigured?.length) {
+        note.hidden = false;
+        setText(
+          'unconfigured-text',
+          'The bot is in ' +
+            d.unconfigured.length +
+            ' channel(s) it has no settings for: ' +
+            d.unconfigured.map((c) => '#' + (c.name || c.channelId)).join(', ') +
+            '. Huddles there are still announced and still score points, but they do not appear on the dashboard.',
+        );
+      } else {
+        note.hidden = true;
+      }
+      setText('hc-tag', d.channels.length + ' configured');
+      $('hc-list').innerHTML = d.channels.length
+        ? d.channels.map(channelCard).join('')
+        : '<div class="emptynote">No channels configured yet.</div>';
+    })
+    .catch(() => {
+      $('hc-list').innerHTML = '<div class="emptynote">Could not load channel settings.</div>';
+    });
+}
+
+function wireHuddles() {
+  $('hc-list').addEventListener('change', (event) => {
+    const box = event.target.closest('input[data-flag]');
+    if (!box) return;
+    const row = box.closest('.cardrow');
+    const channelId = row.dataset.channel;
+    const flag = box.dataset.flag;
+    const patch = flag === 'paused' ? { paused: box.checked } : { [flag]: box.checked ? 1 : 0 };
+    post('/api/huddles/config', { channelId, ...patch })
+      .then(() => row.querySelector('[data-saved]').classList.add('on'))
+      .catch(() => {});
+  });
+  $('hc-list').addEventListener('click', (event) => {
+    const btn = event.target.closest('button[data-remove-owner]');
+    if (!btn) return;
+    const row = btn.closest('.cardrow');
+    post('/api/huddles/owners', { channelId: row.dataset.channel, remove: btn.dataset.removeOwner })
+      .then(() => loadHuddles())
+      .catch(() => {});
+  });
+  $('hc-list').addEventListener('keydown', (event) => {
+    const input = event.target.closest('input[data-add-owner]');
+    if (!input || event.key !== 'Enter') return;
+    event.preventDefault();
+    const value = input.value.trim().toUpperCase();
+    if (!value) return;
+    const row = input.closest('.cardrow');
+    post('/api/huddles/owners', { channelId: row.dataset.channel, add: value })
+      .then(() => loadHuddles())
+      .catch(() => {});
+  });
+}
+
+function loadAdmin() {
+  fetch(base + '/api/admin')
+    .then((r) => r.json())
+    .then((d) => {
+      $('scope-list').innerHTML = (d.permissions || [])
+        .map(
+          (p) =>
+            '<div class="cardrow"><div class="hd"><div class="nm"><span>' +
+            escapeHtml(p.label) +
+            '</span></div><span class="tag' +
+            (p.granted ? ' ok' : '') +
+            '">' +
+            (p.granted ? 'granted' : 'missing') +
+            '</span></div><div class="id">' +
+            escapeHtml(p.detail) +
+            '</div></div>',
+        )
+        .join('');
+      setText('orphan-tag', d.orphans?.total + ' total');
+      setText(
+        'orphan-note',
+        d.orphans?.total
+          ? 'Recorded from workspace-wide events, so there is no channel to attribute them to. They are excluded from every number on the dashboard and score no points.'
+          : 'Every huddle the bot has recorded has a channel it can be attributed to.',
+      );
+      $('orphan-kv').innerHTML = [
+        ['never had a channel', d.orphans?.noChannel ?? 0],
+        ['no thread to check', d.orphans?.noThread ?? 0],
+        ['still open', d.orphans?.active ?? 0],
+        ['already closed', d.orphans?.ended ?? 0],
+      ]
+        .map(([k, v]) => '<div><span class="k">' + k + '</span><span class="v">' + v + '</span></div>')
+        .join('');
+      $('member-kv').innerHTML = (d.membership || [])
+        .map(
+          ([k, v]) =>
+            '<div><span class="k">' + escapeHtml(k) + '</span><span class="v">' + escapeHtml(v) + '</span></div>',
+        )
+        .join('');
+    })
+    .catch(() => {});
+}
 
 refresh();
 setInterval(refresh, 5000);

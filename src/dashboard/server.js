@@ -12,6 +12,14 @@ import { buildDashboardStats } from './stats.js';
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
 const SESSION_COOKIE = 'asteria_session';
 const SESSION_MAX_AGE_SECONDS = 60 * 60 * 24 * 30;
+const PAGES = { '/j-log': 'j-log', '/huddles': 'huddles', '/admin': 'admin' };
+// Long enough to stop a channel being a nuisance for a while without needing a
+// separate unpause control.
+const PAUSE_SECONDS = 60 * 60 * 12;
+
+function nowEpochSeconds() {
+  return Math.floor(Date.now() / 1000);
+}
 
 export function createDashboardServer({ store, client, botChannels, logger = console, startedAt = Date.now() }) {
   const eventsFilePath = process.env.ASTERIA_STATUS_FILE || path.join(repoRoot, 'data', 'status-events.json');
@@ -80,6 +88,139 @@ export function createDashboardServer({ store, client, botChannels, logger = con
   function sessionCookie(token, req) {
     const secure = isSecure(req);
     return `${SESSION_COOKIE}=${token}; Path=/; HttpOnly; SameSite=Lax; Max-Age=${SESSION_MAX_AGE_SECONDS}${secure ? '; Secure' : ''}`;
+  }
+
+  // Anything that changes how the bot behaves is limited to people who already
+  // run a channel, or Jacob. Being able to read the dashboard is not the same
+  // thing as being allowed to reconfigure it.
+  function canManageChannel(session, channelId) {
+    if (!session) {
+      return false;
+    }
+    const { isOwner, managedChannelIds } = session.permissions;
+    if (isOwner) {
+      return true;
+    }
+    return Array.isArray(managedChannelIds) && managedChannelIds.includes(channelId);
+  }
+
+  function requireManager(res, session) {
+    if (!session) {
+      sendJson(res, 401, { error: 'Sign in first' });
+      return false;
+    }
+    if (!session.permissions.isManager) {
+      sendJson(res, 403, { error: 'You do not manage any channels' });
+      return false;
+    }
+    return true;
+  }
+
+  function parseOwnerIds(raw) {
+    if (Array.isArray(raw)) {
+      return raw;
+    }
+    if (typeof raw !== 'string' || raw.trim() === '') {
+      return [];
+    }
+    try {
+      const parsed = JSON.parse(raw);
+      return Array.isArray(parsed) ? parsed : [];
+    } catch {
+      return [];
+    }
+  }
+
+  /**
+   * Per channel settings for the huddle customisation tab, plus any channel the
+   * bot is in but has no settings row for. Those still get tracked and still
+   * announce, because an unconfigured channel falls back to the defaults, so
+   * saying so out loud is the only way it is visible.
+   */
+  async function describeHuddleConfig() {
+    const inBot = await botChannels.list();
+    const inBotSet = new Set(inBot);
+    const configured = store.listHuddleChannels();
+    const configuredIds = new Set(configured.map((c) => c.channel_id));
+    const now = nowEpochSeconds();
+    const names = await botChannels.names([...inBotSet]);
+
+    const channels = configured
+      .filter((c) => inBotSet.has(c.channel_id))
+      .map((c) => {
+        const pausedUntil = Number(c.paused_until) || 0;
+        const owners = parseOwnerIds(c.owner_ids);
+        return {
+          channelId: c.channel_id,
+          name: c.name || names.get(c.channel_id) || c.channel_id,
+          enabled: Number(c.enabled) === 1,
+          auto_replies: Number(c.auto_replies) === 1,
+          restrict_triggers: Number(c.restrict_triggers) === 1,
+          paused: pausedUntil > now,
+          pausedUntilLabel:
+            pausedUntil > now ? new Date(pausedUntil * 1000).toISOString().slice(0, 16).replace('T', ' ') : 'never',
+          owners: owners.map((id) => ({ id, name: '' })),
+        };
+      })
+      .sort((a, b) => a.name.localeCompare(b.name));
+
+    return {
+      channels,
+      unconfigured: inBot
+        .filter((id) => !configuredIds.has(id))
+        .map((id) => ({ channelId: id, name: names.get(id) || '' })),
+    };
+  }
+
+  /**
+   * The admin tab, which is mostly a list of what the integration cannot do.
+   */
+  async function describeAdmin() {
+    const inBot = await botChannels.list();
+    const names = await botChannels.names(inBot);
+    const configured = new Set(store.listHuddleChannels().map((c) => c.channel_id));
+    const huddles = store.listHuddles();
+    const noChannel = huddles.filter((h) => !h.channel_id);
+    const noThread = huddles.filter((h) => h.channel_id && !h.thread_root_ts);
+
+    return {
+      permissions: [
+        {
+          label: 'Read who the bot is in',
+          granted: true,
+          detail: 'users.conversations, so channel scoping works',
+        },
+        {
+          label: 'Read DM and group DM membership',
+          granted: false,
+          detail:
+            'needs im:read and mpim:read. Without it a huddle held in a DM cannot be verified, so it scores nothing. Channel huddles are unaffected.',
+        },
+        {
+          label: 'Read a huddle roster',
+          granted: true,
+          detail: 'the roster Slack publishes on the huddle thread; no audio is read or stored',
+        },
+        {
+          label: 'Post and update its own messages',
+          granted: true,
+          detail: 'needed to turn a button press into a confirmation',
+        },
+      ],
+      orphans: {
+        total: noChannel.length + noThread.length,
+        noChannel: noChannel.length,
+        noThread: noThread.length,
+        active: [...noChannel, ...noThread].filter((h) => h.status === 'active').length,
+        ended: [...noChannel, ...noThread].filter((h) => h.status !== 'active').length,
+      },
+      membership: {
+        'channels the bot is in': String(inBot.length),
+        'with settings here': String([...configured].filter((id) => inBot.includes(id)).length),
+        'tracked but unconfigured': String([...configured].filter((id) => !inBot.includes(id)).length),
+        names: inBot.map((id) => `#${names.get(id) || id}`).join(', ') || 'none',
+      },
+    };
   }
 
   async function readJsonBody(req, limitBytes = 4096) {
@@ -325,6 +466,141 @@ export function createDashboardServer({ store, client, botChannels, logger = con
           baseUrl: '',
         }),
       );
+      return;
+    }
+
+    // The tabbed pages. All three are signed-in only: they are settings, not a
+    // public readout, and the admin one additionally has to be the owner.
+    if (PAGES[route] && method === 'GET') {
+      if (!auth_) {
+        redirect(res, '/login');
+        return;
+      }
+      const needsOwner = route === '/admin';
+      if (needsOwner && !auth_.permissions.isOwner) {
+        sendHtml(
+          res,
+          403,
+          renderDashboardHtml({
+            oauthConfigured: auth.oauthConfigured,
+            signedIn: true,
+            role: auth_.permissions.role,
+            baseUrl: '',
+            view: 'home',
+          }),
+        );
+        return;
+      }
+      sendHtml(
+        res,
+        200,
+        renderDashboardHtml({
+          oauthConfigured: auth.oauthConfigured,
+          signedIn: true,
+          role: auth_.permissions.role,
+          baseUrl: '',
+          view: PAGES[route],
+        }),
+      );
+      return;
+    }
+
+    if (route === '/api/j-log' && method === 'GET') {
+      if (!requireManager(res, auth_)) return;
+      sendJson(res, 200, {
+        settings: store.getSettings(),
+        draft: store.getDraft() || null,
+        recentQuestions: store.getRecentDailyQuestionTexts(5) || [],
+      });
+      return;
+    }
+
+    if (route === '/api/j-log/draft' && method === 'POST') {
+      if (!requireManager(res, auth_)) return;
+      const body = await readJsonBody(req, 16384);
+      if (body?.clear) {
+        store.clearDraft();
+        sendJson(res, 200, { ok: true, draft: null });
+        return;
+      }
+      const saved = store.saveDraft({
+        main_update_text: String(body?.main_update_text ?? ''),
+        song_text: String(body?.song_text ?? ''),
+        event_text: String(body?.event_text ?? ''),
+      });
+      sendJson(res, 200, { ok: true, draft: saved || null });
+      return;
+    }
+
+    if (route === '/api/j-log/settings' && method === 'POST') {
+      if (!requireManager(res, auth_)) return;
+      const body = await readJsonBody(req);
+      const merged = store.updateSettings(body || {});
+      sendJson(res, 200, { ok: true, settings: merged });
+      return;
+    }
+
+    if (route === '/api/huddles/config' && method === 'GET') {
+      if (!requireManager(res, auth_)) return;
+      sendJson(res, 200, await describeHuddleConfig());
+      return;
+    }
+
+    if (route === '/api/huddles/config' && method === 'POST') {
+      if (!requireManager(res, auth_)) return;
+      const body = await readJsonBody(req);
+      const channelId = String(body?.channelId || '');
+      if (!channelId || !canManageChannel(auth_, channelId)) {
+        sendJson(res, 403, { error: 'Not your channel' });
+        return;
+      }
+      // A channel with no row yet has to exist before its flags can be set.
+      store.upsertHuddleChannel({ channelId });
+      const allowed = ['enabled', 'auto_replies', 'restrict_triggers'];
+      for (const field of allowed) {
+        if (field in (body || {})) {
+          store.setHuddleChannelFlag(channelId, field, body[field] ? 1 : 0);
+        }
+      }
+      if ('paused' in (body || {})) {
+        store.setHuddleChannelFlag(channelId, 'paused_until', body.paused ? nowEpochSeconds() + PAUSE_SECONDS : 0);
+      }
+      sendJson(res, 200, { ok: true });
+      return;
+    }
+
+    if (route === '/api/huddles/owners' && method === 'POST') {
+      if (!requireManager(res, auth_)) return;
+      const body = await readJsonBody(req);
+      const channelId = String(body?.channelId || '');
+      if (!channelId || !canManageChannel(auth_, channelId)) {
+        sendJson(res, 403, { error: 'Not your channel' });
+        return;
+      }
+      const row = store.getHuddleChannel(channelId);
+      const current = [...(parseOwnerIds(row?.owner_ids) || [])];
+      const add = String(body?.add || '')
+        .trim()
+        .toUpperCase();
+      const remove = String(body?.remove || '')
+        .trim()
+        .toUpperCase();
+      if (add && !/^[UW][A-Z0-9]{7,}$/.test(add)) {
+        sendJson(res, 400, { error: 'That does not look like a Slack user id' });
+        return;
+      }
+      const next = remove ? current.filter((id) => id !== remove) : add ? [...new Set([...current, add])] : current;
+      store.upsertHuddleChannel({ channelId, ownerIds: next });
+      sendJson(res, 200, { ok: true, ownerIds: next });
+      return;
+    }
+
+    if (route === '/api/admin' && method === 'GET') {
+      if (!auth_?.permissions.isOwner) {
+        sendJson(res, 403, { error: 'Owner only' });
+        return;
+      }
+      sendJson(res, 200, await describeAdmin());
       return;
     }
 
