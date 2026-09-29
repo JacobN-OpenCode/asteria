@@ -1183,7 +1183,15 @@ export async function createStore(databasePath, options = {}) {
         INSERT INTO huddles (call_id, channel_id, channel_name, created_by, started_at, ended_at, thread_root_ts, participant_json, status, last_seen_at, created_at)
         VALUES ($call_id, $channel_id, $channel_name, $created_by, $started_at, $ended_at, $thread_root_ts, $participant_json, $status, $last_seen_at, CURRENT_TIMESTAMP)
         ON CONFLICT(call_id) DO UPDATE SET
-          channel_id = excluded.channel_id,
+          -- A huddle row is created by the join event, which carries no channel,
+          -- and the channel only arrives with the later thread message. Updating
+          -- unconditionally meant any event without a channel wiped a channel we
+          -- already knew, losing the attribution that points and per-channel
+          -- stats depend on.
+          channel_id = CASE
+            WHEN excluded.channel_id <> '' THEN excluded.channel_id
+            ELSE huddles.channel_id
+          END,
           channel_name = excluded.channel_name,
           created_by = excluded.created_by,
           started_at = excluded.started_at,

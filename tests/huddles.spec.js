@@ -68,6 +68,7 @@ function createBasicClient() {
         permalink: `https://example.slack.com/archives/C/p${args.message_ts}`,
       })),
       update: mock.fn(async () => ({ ts: '111.222' })),
+      postEphemeral: mock.fn(async () => ({ ok: true })),
     },
     conversations: {
       open: mock.fn(async () => ({ channel: { id: 'Dquiet' } })),
@@ -1783,7 +1784,7 @@ describe('huddle channel configuration', () => {
     );
   });
 
-  it('ignores mentions from non-owners when the channel restricts triggers', async () => {
+  it('tells a non-owner why it is ignoring them, rather than staying silent', async () => {
     const store = await createTestStore();
     const client = createBasicClient();
     const { handlers } = createTrackerHarness({ store, client, ownerId: 'UOWNER' });
@@ -1810,7 +1811,12 @@ describe('huddle channel configuration', () => {
       },
     });
     await flush();
-    assert.equal(client.chat.postMessage.mock.callCount(), postsBefore, 'no reply for a non-owner');
+    // Silence here is what made it look broken. The person is told why, and only
+    // the person, so the channel is not spammed and the manager is not pinged.
+    const ephemeral = client.chat.postEphemeral.mock.calls.at(-1)?.arguments[0];
+    assert.equal(ephemeral.user, 'UTRANSCRIPT', 'the explanation goes to whoever asked');
+    assert(ephemeral.text.includes('<@UOWNER>'), 'and names who can answer instead');
+    assert.equal(client.chat.postMessage.mock.callCount(), postsBefore, 'nothing is said in the channel');
     assert(
       store.listTriggerLog(50, ['Crandom']).some((entry) => entry.action === 'silly_request_denied'),
       'logs the denial',
@@ -1883,6 +1889,46 @@ describe('huddle channel configuration', () => {
         .some((entry) => entry.action === 'huddle_track_again_denied' && entry.detail === 'tracking paused'),
       'logs the denial with the reason',
     );
+  });
+
+  it('tells the clicker directly when Slack refuses to edit the button message', async () => {
+    const store = await createTestStore();
+    const client = createBasicClient();
+    // Slack answers cant_update_message for a message that is too old or that
+    // the bot did not post. The click still counts; only the confirmation is lost.
+    client.chat.update = mock.fn(async () => {
+      throw Object.assign(new Error('An API error occurred: cant_update_message'), {
+        data: { error: 'cant_update_message' },
+      });
+    });
+    const { handlers } = createTrackerHarness({ store, client, ownerId: 'UOWNER' });
+
+    store.upsertHuddle({
+      callId: 'R1',
+      channelId: 'Crandom',
+      createdBy: 'UOWNER',
+      startedAt: 172000,
+      threadRootTs: '172000.000000',
+      status: 'ended',
+      endedAt: 172100,
+    });
+
+    await handlers['action:huddle_track_again']({
+      ack: async () => {},
+      body: {
+        user: { id: 'UOWNER' },
+        actions: [{ value: 'R1' }],
+        message: { ts: '172000.000000', thread_ts: '172000.000000' },
+        container: { channel_id: 'Crandom' },
+      },
+      client,
+    });
+    await flush();
+
+    const ephemeral = client.chat.postEphemeral.mock.calls.at(-1)?.arguments[0];
+    assert.equal(ephemeral.user, 'UOWNER', 'the person who clicked hears about it');
+    assert(ephemeral.text.includes('tracking this huddle again'), 'and is told it worked');
+    assert.equal(store.getHuddle('R1').status, 'active', 'the click was not lost');
   });
 });
 

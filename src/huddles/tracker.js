@@ -640,6 +640,19 @@ export function createHuddleTracker({ app, store, client, logger, ownerId = '', 
         detail: 'not a channel owner',
         channelId,
       });
+      // Say no out loud. Silently ignoring someone reads as a broken bot, and
+      // this is the one refusal where the person asking did nothing wrong: they
+      // just are not a manager. Ephemeral so it reaches them and nobody else.
+      const owners = rules.ownerIds || [];
+      const who =
+        owners.length > 0
+          ? `Only ${owners.map((id) => `<@${id}>`).join(' ')} can ask me things in this channel.`
+          : 'Only channel managers can ask me things in this channel.';
+      await answerActionPrivately(
+        replyClient,
+        { user: { id: message?.user }, container: { channel_id: channelId }, channel: { id: channelId } },
+        `${who} A manager can add you from the app home, or at /huddles on the dashboard.`,
+      );
       return;
     }
     const huddle = store.listHuddles().find((h) => h.thread_root_ts === threadTs);
@@ -825,6 +838,7 @@ export function createHuddleTracker({ app, store, client, logger, ownerId = '', 
         actionClient,
         channelId,
         ts,
+        userId,
         text: 'only the channel owners I was given can ask me to track a huddle here',
       });
       return;
@@ -840,6 +854,7 @@ export function createHuddleTracker({ app, store, client, logger, ownerId = '', 
         actionClient,
         channelId,
         ts,
+        userId,
         text: rules.paused
           ? 'tracking is paused in this channel right now, so im staying quiet :zipper-mouth:'
           : 'tracking is turned off in this channel, so im staying quiet :zipper-mouth:',
@@ -858,6 +873,7 @@ export function createHuddleTracker({ app, store, client, logger, ownerId = '', 
         actionClient,
         channelId,
         ts,
+        userId,
         text: "that huddle's already over 💀 :freddie-sleeping: - nothing to track",
       });
       return;
@@ -889,12 +905,20 @@ export function createHuddleTracker({ app, store, client, logger, ownerId = '', 
           ],
         });
       } catch (error) {
+        // Slack refuses to edit a message that is too old or that the bot did not
+        // post. Swallowing that left the button sitting there doing nothing after
+        // a click, which looks exactly like an unresponsive bot.
         logger.error(`Failed to confirm huddle tracking for ${callId}`, error);
+        await answerActionPrivately(
+          actionClient,
+          { user: { id: userId }, container: { channel_id: channelId }, channel: { id: channelId } },
+          'Thanks for the click, but I could not update the message. I am tracking this huddle again.',
+        );
       }
     }
   }
 
-  async function declineTrackAgain({ actionClient, channelId, ts, text }) {
+  async function declineTrackAgain({ actionClient, channelId, ts, text, userId }) {
     if (!ts || !channelId) {
       return;
     }
@@ -906,7 +930,14 @@ export function createHuddleTracker({ app, store, client, logger, ownerId = '', 
         blocks: [{ type: 'section', text: { type: 'mrkdwn', text } }],
       });
     } catch (error) {
+      // The button stays clickable and looks live if the edit is refused, so tell
+      // the person who pressed it directly instead.
       logger.error(`Failed to decline huddle re-tracking in ${channelId}`, error);
+      await answerActionPrivately(
+        actionClient,
+        { user: { id: userId }, container: { channel_id: channelId }, channel: { id: channelId } },
+        text,
+      );
     }
   }
 
