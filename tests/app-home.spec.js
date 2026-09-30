@@ -26,7 +26,7 @@ afterEach(() => {
   createdPaths = [];
 });
 
-function createHandlerTestHarness({ store, aiService, botChannelIds = ['Crandom', 'Csecond'] }) {
+function createHandlerTestHarness({ store, aiService, botChannelIds = ['Crandom', 'Csecond'], publicUrl = '' }) {
   const handlers = {};
   const app = {
     action: (actionId, handler) => {
@@ -50,6 +50,8 @@ function createHandlerTestHarness({ store, aiService, botChannelIds = ['Crandom'
     store,
     aiService,
     botChannels,
+    // publicUrl is optional; the harness only needs it for the link assertions.
+    environment: { publicUrl },
   });
   return { ...handlers, publishTab, handleHuddleChannelAction, botChannels };
 }
@@ -950,6 +952,61 @@ describe('App Home handlers', () => {
     const messageText = publishArgs.view.blocks.filter((block) => block.type === 'section').at(-1).text.text;
     assert(messageText.includes('<#C123>'));
     assert(!messageText.includes('unknown channel'));
+    store.close();
+  });
+
+  it('links each huddle to its own page when a public host is configured', async () => {
+    const { store } = await (async () => {
+      const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'asteria-overview-'));
+      const databasePath = path.join(tempDir, 'asteria.sqlite');
+      createdPaths.push(databasePath);
+      const created = await createStore(databasePath);
+      created.updateSettings({ personal_channel_owner_id: 'UOWNER', timezone: 'UTC' });
+      return { store: created };
+    })();
+    store.upsertHuddle({
+      callId: 'R2',
+      channelId: 'C123',
+      channelName: 'general',
+      startedAt: 1754213600,
+      endedAt: 1754217200,
+    });
+
+    const client = createClient();
+    const handlers = createHandlerTestHarness({
+      store,
+      publicUrl: 'https://asteria.test',
+    });
+    await handlers.publishTab(client, 'UOWNER', 'huddles', 'huddles');
+
+    const view = client.views.publish.mock.calls.at(-1).arguments[0].view;
+    const text = view.blocks.filter((block) => block.type === 'section').at(-1).text.text;
+    assert(text.includes('<https://asteria.test/huddle/R2|open stats>'), 'the overview links to the huddle page');
+    assert(!text.includes('DM prompt'), 'and does not claim a prompt arrives by DM');
+    store.close();
+  });
+
+  it('shows no link rather than a broken one when no public host is set', async () => {
+    const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'asteria-overview-'));
+    const databasePath = path.join(tempDir, 'asteria.sqlite');
+    createdPaths.push(databasePath);
+    const store = await createStore(databasePath);
+    store.updateSettings({ personal_channel_owner_id: 'UOWNER', timezone: 'UTC' });
+    store.upsertHuddle({
+      callId: 'R2',
+      channelId: 'C123',
+      channelName: 'general',
+      startedAt: 1754213600,
+      endedAt: 1754217200,
+    });
+
+    const client = createClient();
+    const handlers = createHandlerTestHarness({ store, publicUrl: '' });
+    await handlers.publishTab(client, 'UOWNER', 'huddles', 'huddles');
+
+    const view = client.views.publish.mock.calls.at(-1).arguments[0].view;
+    const text = view.blocks.filter((block) => block.type === 'section').at(-1).text.text;
+    assert(!text.includes('/huddle/'), 'no link at all, rather than one that 404s');
     store.close();
   });
 });

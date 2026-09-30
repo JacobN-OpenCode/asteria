@@ -953,7 +953,7 @@ function buildSettingsView({ settings, notice, navigation }) {
   };
 }
 
-function formatHuddleSummary(huddle, timezone) {
+function formatHuddleSummary(huddle, timezone, baseUrl = '') {
   const startLabel = huddle.started_at
     ? DateTime.fromSeconds(huddle.started_at, { zone: timezone || 'UTC' }).toFormat('d LLL yyyy, HH:mm')
     : 'unknown date';
@@ -961,10 +961,14 @@ function formatHuddleSummary(huddle, timezone) {
   const channel =
     channelId.startsWith('D') || channelId.startsWith('G') ? 'a DM' : channelId ? `<#${channelId}>` : 'unknown channel';
   const status = huddle.status === 'active' ? ' · :large_blue_circle: active now' : '';
-  return `• ${channel} · ${startLabel}${status}`;
+  // The link only exists for a huddle we can prove a host for, and only for a
+  // huddle that has actually got a call id, so it is never a dead link.
+  const link =
+    baseUrl && huddle.call_id ? ` · <${baseUrl}/huddle/${encodeURIComponent(huddle.call_id)}|open stats>` : '';
+  return `• ${channel} · ${startLabel}${status}${link}`;
 }
 
-export function buildHuddlesView({ huddles, notice, timezone, navigation }) {
+export function buildHuddlesView({ huddles, notice, timezone, navigation, baseUrl = '' }) {
   return {
     type: 'home',
     callback_id: 'asteria_home_huddles',
@@ -976,7 +980,10 @@ export function buildHuddlesView({ huddles, notice, timezone, navigation }) {
         type: 'section',
         text: {
           type: 'mrkdwn',
-          text: 'Huddles from channels Asteria is in, most recent first. Every ended huddle can generate a review from its DM prompt.',
+          // The old copy said a review could be generated from a DM prompt.
+          // Prompts are thread-only now, so anyone reading it would have gone
+          // looking for a button that is not there.
+          text: "Huddles from channels Asteria is in, most recent first. Open the stats for any huddle; the recap prompt, if one was sent, is in that huddle's Slack thread.",
         },
       },
       ...(huddles.length > 0
@@ -985,7 +992,7 @@ export function buildHuddlesView({ huddles, notice, timezone, navigation }) {
               type: 'section',
               text: {
                 type: 'mrkdwn',
-                text: huddles.map((huddle) => formatHuddleSummary(huddle, timezone)).join('\n'),
+                text: huddles.map((huddle) => formatHuddleSummary(huddle, timezone, baseUrl)).join('\n'),
               },
             },
           ]
@@ -1294,6 +1301,7 @@ export function buildHomeView({
   huddleChannels,
   leaderboard,
   logs,
+  baseUrl = '',
 }) {
   const activeCategory =
     SUB_TABS[category] && (isOwner || category !== CHANNELS_CATEGORY) ? category : defaultCategoryFor(isOwner);
@@ -1328,7 +1336,7 @@ export function buildHomeView({
       if (!isOwner) {
         return buildLeaderboardView({ leaderboard: leaderboard || [], notice, navigation });
       }
-      return buildHuddlesView({ huddles: huddles || [], notice, timezone: settings.timezone, navigation });
+      return buildHuddlesView({ huddles: huddles || [], notice, timezone: settings.timezone, navigation, baseUrl });
     }
     if (activeSub === 'leaderboard') {
       return buildLeaderboardView({ leaderboard: leaderboard || [], notice, navigation });
