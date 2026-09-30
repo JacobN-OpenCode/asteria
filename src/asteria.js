@@ -111,6 +111,9 @@ export async function createAsteriaRuntime() {
     logger,
     botChannels,
     ownerId: store.getSettings().personal_channel_owner_id || environment.personalChannelOwnerId,
+    // Every huddle gets a link in its channel. Without this the link would be
+    // built from a guess, and a wrong host in a public channel is not a small bug.
+    baseUrl: environment.publicUrl,
   });
 
   const todoistSync = createTodoistSync({
