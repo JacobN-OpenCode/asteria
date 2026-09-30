@@ -137,6 +137,14 @@ describe('tabbed pages', () => {
     let data = await (await get('/api/huddles/config', ownerCookie)).json();
     assert.equal(data.channels[0].restrict_triggers, true);
 
+    // Condensed mode: on, the thread gets the summary and a link and no button.
+    assert.equal(
+      (await send('/api/huddles/config', { channelId: CHANNEL, condensed_review: 1 }, ownerCookie)).status,
+      200,
+    );
+    data = await (await get('/api/huddles/config', ownerCookie)).json();
+    assert.equal(data.channels[0].condensed_review, true, 'condensed is readable back');
+
     await send('/api/huddles/config', { channelId: CHANNEL, paused: true }, ownerCookie);
     data = await (await get('/api/huddles/config', ownerCookie)).json();
     assert.equal(data.channels[0].paused, true, 'a pause silences the channel');

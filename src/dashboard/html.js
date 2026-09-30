@@ -1188,6 +1188,10 @@ function channelCard(c) {
     '<label class="switch"><input type="checkbox" data-flag="restrict_triggers"' +
     (c.restrict_triggers ? ' checked' : '') +
     '><i></i></label></div>' +
+    '<div class="switchrow"><div><div class="t">Condended recaps</div><div class="d">On, the thread gets the summary and a link, and no review button.</div></div>' +
+    '<label class="switch"><input type="checkbox" data-flag="condensed_review"' +
+    (c.condensed_review ? ' checked' : '') +
+    '><i></i></label></div>' +
     '<div class="switchrow"><div><div class="t">Paused</div><div class="d">Stops everything until ' +
     escapeHtml(c.pausedUntilLabel || 'never') +
     '</div></div>' +

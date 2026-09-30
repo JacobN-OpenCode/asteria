@@ -48,6 +48,7 @@ const HUDDLE_CHANNEL_OPS = [
   'configure',
   'toggle_tracking',
   'toggle_auto_replies',
+  'toggle_condensed',
   'toggle_restrict',
   'pause',
   'resume',
@@ -122,6 +123,7 @@ export function createHomeHandlers({
         enabled: !!channel.enabled,
         autoReplies: !!channel.auto_replies,
         restrictTriggers: !!channel.restrict_triggers,
+        condensed: !!channel.condensed_review,
         ownerIds: channel.owner_ids || [],
         pausedUntil: channel.paused_until || 0,
         paused: (channel.paused_until || 0) > now,
@@ -200,6 +202,9 @@ export function createHomeHandlers({
     if (before.restrictTriggers !== after.restrictTriggers) {
       changes.push(`trigger access ${after.restrictTriggers ? 'owners only' : 'anyone'}`);
     }
+    if (before.condensed !== after.condensed) {
+      changes.push(`condensed recaps ${after.condensed ? 'on' : 'off'}`);
+    }
     if (before.pausedUntil !== after.pausedUntil) {
       changes.push(after.pausedUntil > Math.floor(Date.now() / 1000) ? 'paused' : 'resumed');
     }
@@ -219,6 +224,7 @@ export function createHomeHandlers({
       enabled: !!row?.enabled,
       autoReplies: !!row?.auto_replies,
       restrictTriggers: !!row?.restrict_triggers,
+      condensed: !!row?.condensed_review,
       pausedUntil: Number(row?.paused_until) || 0,
       ownerIds: parseOwnerIdList(row?.owner_ids),
       name: row?.name || '',
@@ -285,6 +291,18 @@ export function createHomeHandlers({
     });
   }
 
+  async function handleToggleCondensed({ ack, body, client }) {
+    const channelId = body?.actions?.[0]?.value;
+    const next = !currentChannelState(channelId).condensed;
+    await applyChannelConfigChange({
+      ack,
+      body,
+      client,
+      channelId,
+      mutate: () => store.setHuddleChannelFlag(channelId, 'condensed_review', next),
+    });
+  }
+
   async function handlePauseChannel({ ack, body, client }) {
     const raw = body?.actions?.[0]?.value || '';
     const [channelId, minutesRaw] = raw.split(':');
@@ -317,6 +335,7 @@ export function createHomeHandlers({
     configure: handleOpenHuddleChannelConfig,
     toggle_tracking: handleToggleTracking,
     toggle_auto_replies: handleToggleAutoReplies,
+    toggle_condensed: handleToggleCondensed,
     toggle_restrict: handleToggleRestrict,
     pause: handlePauseChannel,
     resume: handleResumeChannel,
