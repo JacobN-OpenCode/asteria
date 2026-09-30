@@ -1098,7 +1098,18 @@ function buildHuddleChannelBlocks(channel, now) {
     {
       type: 'button',
       action_id: `${HuddleChannelActionPrefix}toggle_restrict_${value}`,
-      text: { type: 'plain_text', text: channel.restrictTriggers ? 'Owners only: on' : 'Owners only: off' },
+      // This is about the bot's own banter and the track-again button, not the
+      // review button, which anyone in the thread can now press.
+      text: {
+        type: 'plain_text',
+        text: channel.restrictTriggers ? 'Owner-only replies: on' : 'Owner-only replies: off',
+      },
+      value,
+    },
+    {
+      type: 'button',
+      action_id: `${HuddleChannelActionPrefix}toggle_condensed_${value}`,
+      text: { type: 'plain_text', text: channel.condensed ? 'Condensed: on' : 'Condensed: off' },
       value,
     },
   ];

@@ -298,6 +298,7 @@ people who were in the huddle.</p></div></body></html>`;
           enabled: Number(c.enabled) === 1,
           auto_replies: Number(c.auto_replies) === 1,
           restrict_triggers: Number(c.restrict_triggers) === 1,
+          condensed_review: Number(c.condensed_review) === 1,
           paused: pausedUntil > now,
           pausedUntilLabel:
             pausedUntil > now ? new Date(pausedUntil * 1000).toISOString().slice(0, 16).replace('T', ' ') : 'never',
@@ -751,7 +752,7 @@ people who were in the huddle.</p></div></body></html>`;
       }
       // A channel with no row yet has to exist before its flags can be set.
       store.upsertHuddleChannel({ channelId });
-      const allowed = ['enabled', 'auto_replies', 'restrict_triggers'];
+      const allowed = ['enabled', 'auto_replies', 'restrict_triggers', 'condensed_review'];
       for (const field of allowed) {
         if (field in (body || {})) {
           store.setHuddleChannelFlag(channelId, field, body[field] ? 1 : 0);

@@ -1155,6 +1155,7 @@ describe('App Home categories and huddle channel controls', () => {
     assert(actionIds.includes('huddle_channel_toggle_tracking_Crandom'));
     assert(actionIds.includes('huddle_channel_toggle_auto_replies_Crandom'));
     assert(actionIds.includes('huddle_channel_toggle_restrict_Crandom'));
+    assert(actionIds.includes('huddle_channel_toggle_condensed_Crandom'));
     assert(actionIds.includes('huddle_channel_pause_Crandom_15'));
     assert(!actionIds.some((id) => id.startsWith('huddle_channel_resume')), 'no resume while not paused');
 
@@ -1189,6 +1190,13 @@ describe('App Home categories and huddle channel controls', () => {
     });
     assert.equal(store.getHuddleChannel('Crandom').restrict_triggers, 1, 'owners only');
 
+    await handlers.handleHuddleChannelAction('toggle_condensed', {
+      ack: mock.fn(),
+      body: { user: { id: 'UOWNER' }, actions: [{ value: 'Crandom' }] },
+      client,
+    });
+    assert.equal(store.getHuddleChannel('Crandom').condensed_review, 1, 'condensed on');
+
     await handlers.handleHuddleChannelAction('pause', {
       ack: mock.fn(),
       body: { user: { id: 'UOWNER' }, actions: [{ value: 'Crandom:60' }] },
@@ -1205,11 +1213,12 @@ describe('App Home categories and huddle channel controls', () => {
 
     const logs = store.listTriggerLog(50, ['Crandom']);
     const configLogs = logs.filter((entry) => entry.action === 'huddle_channel_config');
-    assert.equal(configLogs.length, 5, 'every change is logged');
+    assert.equal(configLogs.length, 6, 'every change is logged');
     assert.equal(configLogs[0].user_id, 'UOWNER');
     assert(configLogs.some((entry) => entry.detail.includes('tracking off')));
     assert(configLogs.some((entry) => entry.detail.includes('auto replies off')));
     assert(configLogs.some((entry) => entry.detail.includes('trigger access owners only')));
+    assert(configLogs.some((entry) => entry.detail.includes('condensed recaps on')));
     assert(configLogs.some((entry) => entry.detail.includes('paused')));
     assert(configLogs.some((entry) => entry.detail.includes('resumed')));
     store.close();
