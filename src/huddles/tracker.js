@@ -51,6 +51,7 @@ const DEFAULT_CHANNEL_RULES = {
   pausedUntil: 0,
   autoReplies: true,
   restrictTriggers: false,
+  condensed: false,
   ownerIds: [],
 };
 
@@ -114,7 +115,7 @@ function buildSillyReply(huddle) {
  * thread) comes from `huddle_thread` messages. When a huddle ends the starter
  * is DMed for an optional huddle review.
  */
-export function createHuddleTracker({ app, store, client, logger, ownerId = '', botChannels }) {
+export function createHuddleTracker({ app, store, client, logger, ownerId = '', botChannels, baseUrl = '' }) {
   function buildReviewPrompt(callId, duration) {
     return {
       text: 'Your huddle just ended. Want a huddle review?',
@@ -140,6 +141,48 @@ export function createHuddleTracker({ app, store, client, logger, ownerId = '', 
         },
       ],
     };
+  }
+
+  // Every huddle links back to its own page. Built from the configured public
+  // host rather than guessed from the request, because a wrong host in a public
+  // channel is a published link pointing somewhere unintended.
+  function huddleUrl(callId) {
+    if (!baseUrl || !callId) {
+      return '';
+    }
+    return `${baseUrl}/huddle/${encodeURIComponent(callId)}`;
+  }
+
+  // The summary says "1 hr" or "25 min". formatDuration is for the detail views,
+  // where "1m 30s" is useful; in a one-liner it reads badly.
+  function formatHuddleLength(seconds) {
+    const totalSeconds = Math.max(0, Math.round(Number(seconds) || 0));
+    const minutes = Math.floor(totalSeconds / 60);
+    if (minutes < 60) {
+      return `${minutes} min`;
+    }
+    const hours = Math.floor(minutes / 60);
+    const restMinutes = minutes % 60;
+    return restMinutes ? `${hours} hr ${restMinutes} min` : `${hours} hr`;
+  }
+
+  function buildHuddleSummary({ huddle, awards, durationSeconds, starterName }) {
+    const totalPoints = [...(awards?.values?.() ?? [])].reduce((sum, entry) => sum + (Number(entry?.points) || 0), 0);
+    const url = huddleUrl(huddle.call_id);
+    const length = formatHuddleLength(durationSeconds);
+    const starter = starterName || 'someone';
+    const text = url
+      ? `! ${totalPoints} awarded for the ${length} huddle started by ${starter}! Find all the stats here: ${url}`
+      : `! ${totalPoints} awarded for the ${length} huddle started by ${starter}!`;
+    return { text };
+  }
+
+  function buildHuddleStartedNotice(callId) {
+    const url = huddleUrl(callId);
+    if (!url) {
+      return null;
+    }
+    return { text: `:headphones: Huddle started. Live stats and the recap will be here: ${url}` };
   }
 
   function buildOptOutPrompt(callId) {
@@ -229,6 +272,7 @@ export function createHuddleTracker({ app, store, client, logger, ownerId = '', 
       // A pause is the switch that silences everything.
       autoReplies: !paused && !!row.auto_replies,
       restrictTriggers: !!row.restrict_triggers,
+      condensed: !!row.condensed_review,
       ownerIds: normalizeOwnerIds(parseJsonArray(row.owner_ids)),
       tracking: enabled && !paused,
     };
@@ -270,6 +314,30 @@ export function createHuddleTracker({ app, store, client, logger, ownerId = '', 
     }
   }
 
+  // Posts into the huddle's own thread so the link, the summary and the prompt
+  // all sit with the conversation. A failure here is never fatal: the recap is
+  // worth having but the huddle is already recorded and scored.
+  async function postToHuddleThread(huddle, message) {
+    if (!huddle?.channel_id || !huddle?.thread_root_ts || !message) {
+      return false;
+    }
+    try {
+      await client.chat.postMessage({
+        channel: huddle.channel_id,
+        thread_ts: huddle.thread_root_ts,
+        ...message,
+      });
+      return true;
+    } catch (error) {
+      logger.warn?.(`Could not post to huddle thread for ${huddle.call_id}`, error);
+      return false;
+    }
+  }
+
+  async function announceHuddleStart(huddle) {
+    return postToHuddleThread(huddle, buildHuddleStartedNotice(huddle.call_id));
+  }
+
   async function postReviewPromptToThread(huddle, duration) {
     if (!huddle.channel_id || !huddle.thread_root_ts) {
       return false;
@@ -303,13 +371,28 @@ export function createHuddleTracker({ app, store, client, logger, ownerId = '', 
     if (!huddle) {
       return;
     }
-    await awardHuddlePoints(huddle);
+    const awards = await awardHuddlePoints(huddle);
     const members = store.listHuddleMembers(callId);
+    const duration = huddle.started_at && endedAt ? Math.max(0, endedAt - huddle.started_at) : 0;
+
+    // The one-line summary goes out every time, condensed or not. It is the part
+    // that costs nothing to read and it carries the link, so the channel is never
+    // left wondering what happened.
+    const rules = channelRules(huddle.channel_id || '');
+    if (huddle.channel_id && huddle.thread_root_ts) {
+      const names = await resolveDisplayNames(client, [huddle.created_by, huddle.starter_user_id]);
+      const starterName = names[huddle.starter_user_id || huddle.created_by] || '';
+      await postToHuddleThread(huddle, buildHuddleSummary({ huddle, awards, durationSeconds: duration, starterName }));
+    }
     const recipient = pickReviewRecipient(huddle, members, ownerId);
     if (!recipient) {
       return;
     }
-    const duration = huddle.started_at && endedAt ? Math.max(0, endedAt - huddle.started_at) : 0;
+    // Condensed means the channel gets the summary and the link, not a button
+    // asking for an AI review nobody asked for.
+    if (rules.condensed) {
+      return;
+    }
     if (await postReviewPromptToThread(huddle, duration)) {
       return;
     }
@@ -396,6 +479,9 @@ export function createHuddleTracker({ app, store, client, logger, ownerId = '', 
     // The running totals above cannot answer "why does this person have 808
     // points", and a huddle's own page needs the per-person reasons. Keep them.
     store.saveHuddleAwards(huddle.call_id, huddle.channel_id || '', awards);
+    // Handed back so the end-of-huddle summary can state the real total rather
+    // than re-reading the leaderboard, which is per user and not per huddle.
+    return awards;
   }
 
   async function applyJoin(userId, callId) {
@@ -550,7 +636,9 @@ export function createHuddleTracker({ app, store, client, logger, ownerId = '', 
       return;
     }
     if (!existing && !endedAt) {
-      await announceTrackingToThread(store.getHuddle(room.id));
+      const opened = store.getHuddle(room.id);
+      await announceHuddleStart(opened);
+      await announceTrackingToThread(opened);
     }
     if (endedAt) {
       await finalizeHuddle(room.id, endedAt);
@@ -1107,18 +1195,22 @@ export function createHuddleTracker({ app, store, client, logger, ownerId = '', 
         return;
       }
     }
-    const rules = channelRules(huddle.channel_id || body?.container?.channel_id || '');
-    if (!mayTriggerInChannel(rules, body?.user?.id || '')) {
+    // Anyone who can see the prompt in the thread may ask for a review, so this
+    // is not restricted to channel owners. The one thing that still has to hold
+    // is the bot-channel invariant: if we are no longer in that channel, or no
+    // longer know whether we are, we stay quiet.
+    const reviewChannelId = huddle.channel_id || body?.container?.channel_id || '';
+    if (!reviewChannelId || !(await isBotChannel(reviewChannelId))) {
       store.recordTriggerLog({
         userId: body?.user?.id,
         action: 'huddle_review_denied',
-        detail: 'not a channel owner',
-        channelId: huddle.channel_id || body?.container?.channel_id || '',
+        detail: 'channel is not one the bot is in',
+        channelId: reviewChannelId,
       });
       await answerActionPrivately(
         actionClient,
         body,
-        'only the channel owners I was given can ask me for a review in that channel',
+        'I cannot share stats for a huddle in a channel I am not part of',
       );
       return;
     }

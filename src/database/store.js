@@ -2004,7 +2004,7 @@ export async function createStore(databasePath, options = {}) {
     },
 
     setHuddleChannelFlag(channelId, field, value) {
-      const allowed = new Set(['enabled', 'auto_replies', 'restrict_triggers', 'paused_until']);
+      const allowed = new Set(['enabled', 'auto_replies', 'restrict_triggers', 'condensed_review', 'paused_until']);
       if (!allowed.has(field)) {
         return false;
       }

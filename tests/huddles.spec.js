@@ -42,12 +42,20 @@ const ALL_TEST_CHANNELS = [
   'Cpress',
   'Cquiet',
   'Crandom',
+  'Creview',
   'Cthr',
   'Cbot',
   'Dquiet',
 ];
 
-function createTrackerHarness({ store, client, ownerId, botChannelIds, botChannels }) {
+function createTrackerHarness({
+  store,
+  client,
+  ownerId,
+  botChannelIds,
+  botChannels,
+  baseUrl = 'https://asteria.test',
+}) {
   const handlers = {};
   const app = {
     event: (eventName, handler) => {
@@ -68,8 +76,33 @@ function createTrackerHarness({ store, client, ownerId, botChannelIds, botChanne
     logger: { error: mock.fn(), info: mock.fn() },
     ownerId,
     botChannels: botChannels ?? { list: mock.fn(async () => botChannelIds ?? ALL_TEST_CHANNELS) },
+    baseUrl,
   });
   return { handlers, tracker };
+}
+
+// Count only posts that carry a Slack action button. A huddle thread now also
+// carries a link notice and a summary, which have no buttons, so a raw
+// callCount would be asserting the wrong thing the moment either is added.
+function countButtonPosts(client, actionId) {
+  return client.chat.postMessage.mock.calls.filter((call) => {
+    const arg = call.arguments[0];
+    return (arg.blocks ?? []).some((block) =>
+      (block.elements ?? []).some((element) => (actionId ? element.action_id === actionId : true)),
+    );
+  }).length;
+}
+
+function buttonPosts(client, actionId) {
+  return client.chat.postMessage.mock.calls
+    .map((call) => call.arguments[0])
+    .filter((arg) =>
+      (arg.blocks ?? []).some((block) => (block.elements ?? []).some((element) => element.action_id === actionId)),
+    );
+}
+
+function textsPosted(client) {
+  return client.chat.postMessage.mock.calls.map((call) => call.arguments[0].text ?? '');
 }
 
 function createBasicClient() {
@@ -444,8 +477,8 @@ describe('huddle tracker integration', () => {
     });
     await flush();
     assert.equal(store.getHuddle('R1').status, 'ended', 'the closing huddle_thread message ends it');
-    assert.equal(client.chat.postMessage.mock.callCount(), 1);
-    const prompt = client.chat.postMessage.mock.calls[0].arguments[0];
+    const prompt = buttonPosts(client, 'generate_huddle_review')[0];
+    assert.ok(prompt, 'the review prompt went out');
     assert.equal(prompt.channel, 'Crandom');
     assert.equal(prompt.thread_ts, '172000.000000');
     assert(prompt.blocks.some((block) => block.type === 'actions'));
@@ -469,7 +502,7 @@ describe('huddle tracker integration', () => {
       },
     });
     await flush();
-    assert.equal(client.chat.postMessage.mock.callCount(), 1, 'no duplicate prompts');
+    assert.equal(countButtonPosts(client, 'generate_huddle_review'), 1, 'no duplicate prompts');
 
     store.upsertHuddle({
       callId: 'R9',
@@ -494,9 +527,12 @@ describe('huddle tracker integration', () => {
     });
     await flush();
 
-    assert.equal(client.chat.postMessage.mock.callCount(), 2);
-    const review = client.chat.postMessage.mock.calls[1].arguments[0];
-    assert.equal(review.channel, 'Creview');
+    const review = client.chat.postMessage.mock.calls
+      .map((call) => call.arguments[0])
+      .filter((arg) => arg.channel === 'Creview')
+      .at(-1);
+    assert.ok(review, 'the review went to the channel');
+    assert.equal(review.thread_ts, '1000.000000');
     assert.equal(review.thread_ts, '1000.000000');
     assert(review.text.includes('Huddle review'));
     assert(review.text.includes('#reviews'));
@@ -505,6 +541,284 @@ describe('huddle tracker integration', () => {
     assert(review.text.includes('name-U9 — 1m 40s'));
     assert.equal(review.text.match(/<@[A-Z0-9]+>/g), null, 'the review mentions nobody');
     assert(review.text.includes('No huddle chat messages were recorded.'));
+
+    tracker.stop();
+  });
+
+  it('lets any member generate a review, not just a channel owner', async () => {
+    const store = await createTestStore();
+    const client = createBasicClient();
+    // restrict_triggers is on and the owner list is empty, which used to mean
+    // "nobody may ask". It now means the button is not owner-gated at all.
+    store.setHuddleChannelFlag('Crandom', 'restrict_triggers', 1);
+    const { handlers, tracker } = createTrackerHarness({ store, client, ownerId: 'UOWNER' });
+
+    store.upsertHuddle({
+      callId: 'Rshared',
+      channelId: 'Crandom',
+      channelName: 'random',
+      createdBy: 'UOWNER',
+      startedAt: 1000,
+      endedAt: 1300,
+      threadRootTs: '1000.000000',
+      participantHistory: ['UOWNER', 'U9'],
+    });
+    for (const [userId, seen] of [
+      ['UOWNER', 1000],
+      ['U9', 1100],
+    ]) {
+      store.upsertHuddleMember({
+        callId: 'Rshared',
+        userId,
+        firstSeenAt: seen,
+        lastSeenAt: 1300,
+        isIn: false,
+      });
+    }
+
+    await handlers['action:generate_huddle_review']({
+      ack: mock.fn(),
+      body: { user: { id: 'U9' }, actions: [{ value: 'Rshared' }] },
+      client,
+    });
+    await flush();
+
+    const review = client.chat.postMessage.mock.calls
+      .map((call) => call.arguments[0])
+      .filter((arg) => arg.channel === 'Crandom' && (arg.text ?? '').includes('Huddle review'));
+    assert.equal(review.length, 1, 'a non-owner got their review');
+    const denied = store.listTriggerLog().filter((row) => row.action === 'huddle_review_denied');
+    assert.equal(denied.length, 0, 'and was not denied for not owning the channel');
+
+    tracker.stop();
+  });
+
+  it('still refuses a review for a channel the bot is not in', async () => {
+    const store = await createTestStore();
+    const client = createBasicClient();
+    const { handlers, tracker } = createTrackerHarness({
+      store,
+      client,
+      ownerId: 'UOWNER',
+      botChannelIds: ['Crandom'],
+    });
+
+    store.upsertHuddle({
+      callId: 'Rout',
+      channelId: 'Celsewhere',
+      channelName: 'elsewhere',
+      createdBy: 'UOWNER',
+      startedAt: 1000,
+      endedAt: 1300,
+      threadRootTs: '1000.000000',
+      participantHistory: ['UOWNER'],
+    });
+    store.upsertHuddleMember({
+      callId: 'Rout',
+      userId: 'UOWNER',
+      firstSeenAt: 1000,
+      lastSeenAt: 1300,
+      isIn: false,
+    });
+
+    await handlers['action:generate_huddle_review']({
+      ack: mock.fn(),
+      body: { user: { id: 'UOWNER' }, actions: [{ value: 'Rout' }] },
+      client,
+    });
+    await flush();
+
+    const leaked = client.chat.postMessage.mock.calls
+      .map((call) => call.arguments[0])
+      .filter((arg) => (arg.text ?? '').includes('Huddle review'));
+    assert.equal(leaked.length, 0, 'no stats from a channel we are not in');
+    const denied = store.listTriggerLog().filter((row) => row.action === 'huddle_review_denied');
+    assert.equal(denied.length, 1, 'and it was recorded as denied');
+
+    tracker.stop();
+  });
+
+  it('posts the huddle link when a huddle starts and a summary when it ends', async () => {
+    const store = await createTestStore();
+    const client = createBasicClient();
+    const { handlers, tracker } = createTrackerHarness({ store, client, ownerId: 'UOWNER' });
+
+    await handlers.message({
+      message: {
+        subtype: 'huddle_thread',
+        channel: 'Crandom',
+        ts: '172000.000000',
+        room: {
+          id: 'Rlink',
+          call_family: 'huddle',
+          created_by: 'UOWNER',
+          date_start: 172000,
+          date_end: 0,
+          thread_root_ts: '172000.000000',
+          channels: ['Crandom'],
+          participant_history: ['UOWNER', 'U9'],
+        },
+      },
+    });
+    await handlers['event:user_huddle_changed']({
+      event: {
+        user: {
+          id: 'UOWNER',
+          profile: { huddle_state: 'in_a_huddle', huddle_state_call_id: 'Rlink' },
+        },
+      },
+    });
+    await handlers['event:user_huddle_changed']({
+      event: {
+        user: {
+          id: 'U9',
+          profile: { huddle_state: 'in_a_huddle', huddle_state_call_id: 'Rlink' },
+        },
+      },
+    });
+    await flush();
+
+    const started = textsPosted(client).find((text) => text.includes('Huddle started'));
+    assert.ok(started, 'the start notice went out');
+    assert(
+      started.includes('https://asteria.test/huddle/Rlink'),
+      'and it links to the huddle page, not to some guessed host',
+    );
+
+    await handlers.message({
+      message: {
+        subtype: 'huddle_thread',
+        channel: 'Crandom',
+        ts: '172100.000000',
+        room: {
+          id: 'Rlink',
+          call_family: 'huddle',
+          created_by: 'UOWNER',
+          date_start: 172000,
+          date_end: 172100,
+          thread_root_ts: '172000.000000',
+          channels: ['Crandom'],
+          participant_history: ['UOWNER', 'U9'],
+        },
+      },
+    });
+    await flush();
+
+    const summary = textsPosted(client).find((text) => text.startsWith('! '));
+    assert.ok(summary, 'a one-line summary went out at the end');
+    assert(summary.includes('awarded for the 1 min huddle'), 'it states how long it was');
+    assert(summary.includes('started by name-UOWNER'), 'who started it, by name not mention');
+    assert(!summary.includes('<@'), 'and it pings nobody');
+    assert(summary.includes('https://asteria.test/huddle/Rlink'), 'with the link');
+
+    tracker.stop();
+  });
+
+  it('summarises without asking when the channel is condensed', async () => {
+    const store = await createTestStore();
+    const client = createBasicClient();
+    store.setHuddleChannelFlag('Crandom', 'condensed_review', 1);
+    const { handlers, tracker } = createTrackerHarness({ store, client, ownerId: 'UOWNER' });
+
+    store.upsertHuddle({
+      callId: 'Rcond',
+      channelId: 'Crandom',
+      channelName: 'random',
+      createdBy: 'UOWNER',
+      startedAt: 1000,
+      endedAt: 1300,
+      threadRootTs: '1000.000000',
+      participantHistory: ['UOWNER'],
+    });
+    store.upsertHuddleMember({
+      callId: 'Rcond',
+      userId: 'UOWNER',
+      firstSeenAt: 1000,
+      lastSeenAt: 1300,
+      isIn: false,
+    });
+
+    await handlers.message({
+      message: {
+        subtype: 'huddle_thread',
+        channel: 'Crandom',
+        ts: '1000.000000',
+        room: {
+          id: 'Rcond',
+          call_family: 'huddle',
+          created_by: 'UOWNER',
+          date_start: 1000,
+          date_end: 1300,
+          thread_root_ts: '1000.000000',
+          channels: ['Crandom'],
+          participant_history: ['UOWNER'],
+        },
+      },
+    });
+    await flush();
+
+    assert.equal(countButtonPosts(client, 'generate_huddle_review'), 0, 'condensed: no review button at all');
+    const summary = textsPosted(client).find((text) => text.startsWith('! '));
+    assert.ok(summary, 'condensed still posts the summary and the link');
+    assert(summary.includes('https://asteria.test/huddle/Rcond'));
+
+    tracker.stop();
+  });
+
+  it('posts no link or summary when there is no public host configured', async () => {
+    const store = await createTestStore();
+    const client = createBasicClient();
+    // A missing PUBLIC_URL must not be guessed into a link that 404s in public.
+    const { handlers, tracker } = createTrackerHarness({
+      store,
+      client,
+      ownerId: 'UOWNER',
+      baseUrl: '',
+    });
+
+    store.upsertHuddle({
+      callId: 'Rnourl',
+      channelId: 'Crandom',
+      channelName: 'random',
+      createdBy: 'UOWNER',
+      startedAt: 1000,
+      endedAt: 1300,
+      threadRootTs: '1000.000000',
+      participantHistory: ['UOWNER'],
+    });
+    store.upsertHuddleMember({
+      callId: 'Rnourl',
+      userId: 'UOWNER',
+      firstSeenAt: 1000,
+      lastSeenAt: 1300,
+      isIn: false,
+    });
+    await handlers.message({
+      message: {
+        subtype: 'huddle_thread',
+        channel: 'Crandom',
+        ts: '1000.000000',
+        room: {
+          id: 'Rnourl',
+          call_family: 'huddle',
+          created_by: 'UOWNER',
+          date_start: 1000,
+          date_end: 1300,
+          thread_root_ts: '1000.000000',
+          channels: ['Crandom'],
+          participant_history: ['UOWNER'],
+        },
+      },
+    });
+    await flush();
+
+    const texts = textsPosted(client);
+    assert(!texts.some((text) => text.includes('Huddle started')), 'no start link without a host');
+    assert(!texts.some((text) => text.includes('/huddle/')), 'and no link anywhere');
+    assert(
+      texts.some((text) => text.startsWith('! ') && text.includes('awarded for')),
+      'but the summary still states the total',
+    );
 
     tracker.stop();
   });
@@ -638,10 +952,14 @@ describe('huddle tracker integration', () => {
   it('records the skipped prompt when the thread prompt cannot be posted', async () => {
     const store = await createTestStore();
     const client = createBasicClient();
-    let postCount = 0;
-    client.chat.postMessage = mock.fn(async () => {
-      postCount += 1;
-      if (postCount === 1) {
+    // Fail only the review prompt. Throwing on "the first post" used to work
+    // and silently changed meaning the moment another post was added to the
+    // thread, because it then failed the wrong message.
+    client.chat.postMessage = mock.fn(async (arg) => {
+      const carriesPrompt = (arg.blocks ?? []).some((block) =>
+        (block.elements ?? []).some((element) => element.action_id === 'generate_huddle_review'),
+      );
+      if (carriesPrompt) {
         throw new Error('cannot reply to a huddle thread');
       }
       return { ts: '111.222' };
@@ -700,8 +1018,8 @@ describe('huddle tracker integration', () => {
     });
     await flush();
 
-    assert.equal(client.chat.postMessage.mock.callCount(), 1);
-    const threadAttempt = client.chat.postMessage.mock.calls[0].arguments[0];
+    const threadAttempt = buttonPosts(client, 'generate_huddle_review')[0];
+    assert.ok(threadAttempt, 'it tried the thread first');
     assert.equal(threadAttempt.channel, 'Cthr');
     assert.equal(threadAttempt.thread_ts, '173000.000000');
     // The thread post failed, and the owner must not be DMed about it.
@@ -775,8 +1093,8 @@ describe('huddle tracker integration', () => {
     });
     await flush();
 
-    assert.equal(client.chat.postMessage.mock.callCount(), 1);
-    const notice = client.chat.postMessage.mock.calls[0].arguments[0];
+    const notice = buttonPosts(client, 'huddle_opt_out')[0];
+    assert.ok(notice, 'the opt-out notice went out');
     assert.equal(notice.channel, 'Crandom');
     assert.equal(notice.thread_ts, '172000.000000');
     assert(notice.blocks.some((block) => block.text?.text.includes("i'm tracking your huddle for stats")));
@@ -803,12 +1121,14 @@ describe('huddle tracker integration', () => {
     });
     await flush();
 
-    assert.equal(client.chat.postMessage.mock.callCount(), 2, 'closing sends the review prompt, not another notice');
-    const closing = client.chat.postMessage.mock.calls[1].arguments[0];
     assert.equal(
-      closing.blocks.find((block) => block.type === 'actions').elements[0].action_id,
-      'generate_huddle_review',
+      countButtonPosts(client, 'generate_huddle_review'),
+      1,
+      'closing sends the review prompt exactly once, not another notice',
     );
+    const closing = buttonPosts(client, 'generate_huddle_review')[0];
+    assert.equal(closing.channel, 'Crandom');
+    assert.equal(closing.thread_ts, '172000.000000');
 
     tracker.stop();
   });
@@ -946,7 +1266,7 @@ describe('huddle tracker integration', () => {
     await flush();
 
     assert.equal(store.getHuddle('Rmulti').status, 'ended', 'ends only on the closing message');
-    assert.equal(client.chat.postMessage.mock.callCount(), 1, 'prompt only from the closing message');
+    assert.equal(countButtonPosts(client, 'generate_huddle_review'), 1, 'prompt only from the closing message');
 
     tracker.stop();
   });
@@ -2120,7 +2440,7 @@ describe('huddle reconciliation', () => {
       true,
       'nobody is left flagged as still being in it',
     );
-    assert.equal(client.chat.postMessage.mock.callCount(), 1, 'the review prompt goes out once, promptly');
+    assert.equal(countButtonPosts(client, 'generate_huddle_review'), 1, 'the review prompt goes out once, promptly');
   });
 
   it('leaves a huddle alone while people are still joining and leaving', async () => {
