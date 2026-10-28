@@ -6,7 +6,7 @@
   "display_information": {
     "name": "Jacob's Orbit",
     "description": "Jacob's Orbit tracks huddles, scores them, and runs your Daily Update.",
-    "background_color": "#1e1e2e"
+    "background_color": "#11111b"
   },
   "features": {
     "app_home": {
