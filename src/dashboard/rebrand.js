@@ -8,7 +8,7 @@ const SITE = (process.env.ORBIT_SITE_URL || 'https://orbit.navaratne.uk').replac
  * defaulted to the two names this bot actually answered on.
  */
 function legacyHosts() {
-  return (process.env.ORBIT_LEGACY_HOSTS || 'asteria.navaratne.uk,asteria.mini-jacob.hackclub.app')
+  return (process.env.ORBIT_LEGACY_HOSTS || 'asteria.navaratne.uk')
     .split(',')
     .map((host) => host.trim().toLowerCase())
     .filter(Boolean);
