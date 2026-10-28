@@ -1976,6 +1976,51 @@ describe('huddle tracker integration', () => {
     tracker.stop();
   });
 
+  it('answers @bot stats in a huddle thread with condensed stats and a link', async () => {
+    const store = await createTestStore();
+    const client = createBasicClient();
+    const { handlers, tracker } = createTrackerHarness({ store, client, ownerId: 'UOWNER' });
+
+    store.upsertHuddle({
+      callId: 'Rstats',
+      channelId: 'Crandom',
+      createdBy: 'UOWNER',
+      startedAt: Math.floor(Date.now() / 1000) - 3600,
+      endedAt: null,
+      threadRootTs: '172000.000000',
+      participantHistory: ['UOWNER', 'U9'],
+    });
+    store.upsertHuddleMember({
+      callId: 'Rstats',
+      userId: 'UOWNER',
+      firstSeenAt: 172000,
+      lastSeenAt: 172000,
+      isIn: true,
+    });
+    store.upsertHuddleMember({ callId: 'Rstats', userId: 'U9', firstSeenAt: 172000, lastSeenAt: 172000, isIn: false });
+
+    await handlers.message({
+      message: {
+        type: 'message',
+        channel: 'Crandom',
+        user: 'UOWNER',
+        thread_ts: '172000.000000',
+        ts: '172000.001000',
+        text: '<@BOTUSER> stats please',
+      },
+    });
+    await flush();
+
+    assert.equal(client.chat.postMessage.mock.callCount(), 1, 'one reply');
+    const posted = client.chat.postMessage.mock.calls[0].arguments[0];
+    assert.match(posted.text, /Huddle stats/);
+    assert.match(posted.text, /2 people, 1 in now/, 'condensed headcount');
+    assert.match(posted.text, /1h 0m|60m|1h/, 'the live length');
+    assert.match(posted.text, /points are scored when it ends/);
+    assert.match(posted.text, new RegExp(`https://asteria.test/Rstats`), 'a link to the huddle page');
+    tracker.stop();
+  });
+
   it('answers a mention even when huddle tracking is off in that channel', async () => {
     const store = await createTestStore();
     const client = createBasicClient();

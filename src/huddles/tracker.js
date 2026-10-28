@@ -882,6 +882,32 @@ export function createHuddleTracker({ app, store, client, logger, ownerId = '', 
     return 'The channel owners or the app owner can turn them back on from the app home.';
   }
 
+  // `@bot stats` (or info / summary / recap) inside a huddle thread.
+  const HUDDLE_STATS_TRIGGER = /\b(stats?|info|summary|recap|scores?|leaderboard)\b/i;
+
+  function buildCondensedHuddleStats(huddle) {
+    const live = huddle.status === 'active' && !huddle.ended_at;
+    const members = store.listHuddleMembers(huddle.call_id);
+    const inNow = members.filter((member) => Number(member.is_in) === 1).length;
+    const points = store
+      .listHuddleAwards(huddle.call_id)
+      .reduce((total, award) => total + (Number(award.points) || 0), 0);
+    const duration = live
+      ? Math.max(0, nowEpochSeconds() - (Number(huddle.started_at) || 0))
+      : Math.max(0, (Number(huddle.ended_at) || 0) - (Number(huddle.started_at) || 0));
+    const link = baseUrl && huddle.call_id ? `${baseUrl}/${huddle.call_id}` : '';
+    const lines = [
+      `*Huddle stats* · ${formatLongDuration(duration)}${live ? ' live' : ''}`,
+      `${members.length} ${members.length === 1 ? 'person' : 'people'}${inNow ? `, ${inNow} in now` : ''} · ${
+        live ? 'points are scored when it ends' : `${points} point${points === 1 ? '' : 's'} awarded`
+      }`,
+    ];
+    if (link) {
+      lines.push(`<${link}|Open the huddle page>`);
+    }
+    return { text: lines.join('\n') };
+  }
+
   async function handleHuddleMention({ message, channel, client: eventClient }) {
     const threadTs = message?.thread_ts ?? '';
     const botUserId = await getBotUserId();
@@ -954,6 +980,16 @@ export function createHuddleTracker({ app, store, client, logger, ownerId = '', 
       return response;
     };
 
+    if (huddle && HUDDLE_STATS_TRIGGER.test(String(message?.text || ''))) {
+      store.recordTriggerLog({
+        userId: message?.user || '',
+        action: 'huddle_stats_requested',
+        detail: huddle.call_id,
+        channelId,
+      });
+      await postReply(buildCondensedHuddleStats(huddle));
+      return;
+    }
     if (huddle?.status === 'active') {
       await postReply(buildSillyReply(huddleForUser(huddle, message?.user || '')));
       return;
