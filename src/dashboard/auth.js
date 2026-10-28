@@ -22,18 +22,26 @@ export function createDashboardAuth({ client, store, logger = console, slackClie
     return crypto.randomBytes(bytes).toString('base64url');
   }
 
+  const LOOPBACK_HOST = /^(localhost|127\.\d+\.\d+\.\d+|\[::1\])(:\d+)?$/i;
+
   function publicUrl(req) {
     const configured = process.env.PUBLIC_URL || process.env.ASTERIA_PUBLIC_URL || '';
     if (configured) {
       return configured.replace(/\/+$/, '');
     }
-    const forwardedProto = String(req.headers['x-forwarded-proto'] || '')
-      .split(',')[0]
-      .trim();
-    const proto = forwardedProto || (req.socket.encrypted ? 'https' : 'http');
     const host = String(req.headers['x-forwarded-host'] || req.headers.host || 'localhost')
       .split(',')[0]
       .trim();
+    const forwardedProto = String(req.headers['x-forwarded-proto'] || '')
+      .split(',')[0]
+      .trim()
+      .toLowerCase();
+    // Behind a proxy the app sees plain http even when the visitor is on https.
+    // Slack only accepts the exact redirect URI, so anything that is not
+    // loopback is assumed https unless the proxy explicitly says otherwise.
+    // Getting this wrong sends `http://` to Slack and the sign in dies with
+    // "invalid redirect_uri" even though the registered URL is right.
+    const proto = forwardedProto || (req.socket.encrypted ? 'https' : LOOPBACK_HOST.test(host) ? 'http' : 'https');
     return `${proto}://${host}`;
   }
 
@@ -41,27 +49,8 @@ export function createDashboardAuth({ client, store, logger = console, slackClie
    * Slack "Sign in with Slack" (OIDC user token). Needs the app's client id and
    * secret plus the redirect url registered on the app.
    */
-  /**
-   * The origin the person is actually on, for the OAuth hop only.
-   *
-   * PUBLIC_URL is the canonical address and is what DMs and links use, but the
-   * redirect has to stay on the host the browser is on: during a rename both the
-   * old and new host are registered Slack redirect URLs, and sending someone to
-   * the other one loses their session cookie and looks like a failed sign in.
-   */
-  function requestBaseUrl(req) {
-    const forwardedProto = String(req.headers['x-forwarded-proto'] || '')
-      .split(',')[0]
-      .trim();
-    const proto = forwardedProto || (req.socket.encrypted ? 'https' : 'http');
-    const host = String(req.headers['x-forwarded-host'] || req.headers.host || '')
-      .split(',')[0]
-      .trim();
-    return host ? `${proto}://${host}` : publicUrl(req);
-  }
-
   function slackAuthorizeUrl(req, state, nonce) {
-    const redirectUri = `${requestBaseUrl(req)}/auth/slack/callback`;
+    const redirectUri = `${publicUrl(req)}/auth/slack/callback`;
     const params = new URLSearchParams({
       client_id: slackClientId,
       scope: 'openid profile',
@@ -91,9 +80,9 @@ export function createDashboardAuth({ client, store, logger = console, slackClie
   }
 
   async function exchangeSlackCode(req, code, expectedNonce) {
-    // Must match the authorize request byte for byte, so it uses the same
-    // host-relative base rather than the canonical PUBLIC_URL.
-    const redirectUri = `${requestBaseUrl(req)}/auth/slack/callback`;
+    // Uses the same base as the authorize request, byte for byte. PUBLIC_URL is
+    // canonical and always https, which is what Slack has registered.
+    const redirectUri = `${publicUrl(req)}/auth/slack/callback`;
     // Slack's token endpoint wants a form encoded body with an explicit grant type.
     // Sending JSON without it came back as `invalid_code` on a code that was fine.
     const response = await fetch('https://slack.com/api/openid.connect.token', {

@@ -857,6 +857,26 @@ describe('dashboard markup', () => {
     store.close();
   });
 
+  it('builds an https redirect uri even when the proxy sends no proto header', async () => {
+    const store = await createTestStore();
+    const auth = createDashboardAuth({
+      client: createSlackClientDouble(),
+      store,
+      logger: { warn: mock.fn(), error: mock.fn() },
+      slackClientId: '123.456',
+      slackClientSecret: 'secret',
+    });
+    const url = auth.slackAuthorizeUrl({ headers: { host: 'orbit.navaratne.uk' }, socket: {} }, 'state', 'nonce');
+    assert(
+      url.includes('redirect_uri=https%3A%2F%2Forbit.navaratne.uk%2Fauth%2Fslack%2Fcallback'),
+      'Slack only accepts the exact https url, so http here fails with invalid redirect_uri',
+    );
+    // Loopback stays http so local development and the test suite still work.
+    const local = auth.slackAuthorizeUrl({ headers: { host: '127.0.0.1:8787' }, socket: {} }, 's', 'n');
+    assert(local.includes('redirect_uri=http%3A%2F%2F127.0.0.1%3A8787%2Fauth%2Fslack%2Fcallback'));
+    store.close();
+  });
+
   it('sends the Slack token request form encoded with a grant type', async (t) => {
     const store = await createTestStore();
     const auth = createDashboardAuth({
