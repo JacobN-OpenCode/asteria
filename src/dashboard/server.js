@@ -88,6 +88,22 @@ export function createDashboardServer({
         }
         return response.channel.is_private ? 1 : 0;
       }),
+    // Who Slack says is in the call right now. The thread message's room payload
+    // is the only live source, and it is what makes "in now" truthful instead of
+    // a snapshot from the last time the message was updated.
+    roomParticipants: async (channelId, threadRootTs) => {
+      if (!channelId || !threadRootTs) {
+        return null;
+      }
+      const response = await client.conversations.replies({
+        channel: channelId,
+        ts: threadRootTs,
+        limit: 1,
+        inclusive: true,
+      });
+      const room = (response?.messages || [])[0]?.room;
+      return Array.isArray(room?.participants) ? room.participants : null;
+    },
     // Is this signed in person actually in that private channel? Only Slack can
     // answer, and it is the whole gate on seeing a private channel's stats.
     // Cached per viewer/channel because /api/stats is polled every few seconds.
@@ -335,6 +351,17 @@ people who were in the huddle.</p></div></body></html>`;
           reasons: awardsByUser.get(member.user_id)?.reasons ?? [],
         })),
     ].sort((a, b) => b.points - a.points || (b.provableSeconds || 0) - (a.provableSeconds || 0));
+
+    // Overlay the live roster so "in now" is not a stale snapshot.
+    if (huddle.channel_id && huddle.thread_root_ts && typeof slack.roomParticipants === 'function') {
+      const live = await slack.roomParticipants(huddle.channel_id, huddle.thread_root_ts).catch(() => null);
+      if (live) {
+        const inNow = new Set(live);
+        for (const participant of participants) {
+          participant.isIn = inNow.has(participant.userId);
+        }
+      }
+    }
 
     const ids = participants.map((participant) => participant.userId);
     const [profiles, flaronRecord] = await Promise.all([
