@@ -44,6 +44,8 @@ export function createDashboardServer({
   // for those. This has to be the SDK's own method: the equivalent
   // `client.apiCall('conversations.info', …)` answers `unknown_method` on this
   // app, which looks exactly like a channel with no members.
+  const memberCache = new Map();
+  const MEMBER_TTL_MS = 5 * 60 * 1000;
   const slack = {
     channelSize: async (channelId) => {
       const response = await client.conversations.info({ channel: channelId, include_num_members: true });
@@ -59,6 +61,38 @@ export function createDashboardServer({
         return null;
       }
       return response.channel.is_private ? 1 : 0;
+    },
+    // Is this signed in person actually in that private channel? Only Slack can
+    // answer, and it is the whole gate on seeing a private channel's stats.
+    // Cached per viewer/channel because /api/stats is polled every few seconds.
+    isMember: async (channelId, userId) => {
+      const key = `${channelId}:${userId}`;
+      const cached = memberCache.get(key);
+      if (cached && Date.now() - cached.at < MEMBER_TTL_MS) {
+        return cached.member;
+      }
+      let member = false;
+      let cursor = '';
+      for (let page = 0; page < 10; page += 1) {
+        const response = await client.conversations.members({
+          channel: channelId,
+          limit: 200,
+          ...(cursor ? { cursor } : {}),
+        });
+        if (response?.error) {
+          break;
+        }
+        if ((response?.members || []).includes(userId)) {
+          member = true;
+          break;
+        }
+        cursor = response?.response_metadata?.next_cursor || '';
+        if (!cursor) {
+          break;
+        }
+      }
+      memberCache.set(key, { at: Date.now(), member });
+      return member;
     },
   };
   const auth = createDashboardAuth({
@@ -615,6 +649,7 @@ people who were in the huddle.</p></div></body></html>`;
         slack,
         startedAt,
         statusEvents: readStatusEvents(eventsFilePath),
+        viewerId: auth_?.session.slack_user_id || '',
       });
       sendJson(res, 200, {
         ...stats,

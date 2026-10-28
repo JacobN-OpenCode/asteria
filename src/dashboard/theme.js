@@ -88,6 +88,12 @@ export const THEME_TOKENS = `:root{color-scheme:dark;
   --blue-tint:${alpha(blue, 0.16)};--blue-ring:${alpha(blue, 0.3)};
   --red-tint:${alpha(red, 0.08)};--red-ring:${alpha(red, 0.3)};
   --dot-halo:${alpha(CTP.subtext0, 0.18)};
+  --hair:${alpha(lavender, 0.1)};
+  --hair-strong:${alpha(lavender, 0.18)};
+  --stage-top:${alpha(CTP.surface0, 0.34)};
+  --stage-bottom:${alpha(CTP.mantle, 0.72)};
+  --lift:0 26px 60px -34px ${alpha(CTP.crust, 0.9)};
+  --lift-hover:0 30px 70px -30px ${alpha(CTP.crust, 0.95)};
   --glass:${alpha(CTP.base, 0.88)};--scrim:${alpha(CTP.crust, 0.72)};--shadow:${alpha(CTP.crust, 0.6)};
   --knob:${CTP.text};
 
