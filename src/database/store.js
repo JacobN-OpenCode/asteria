@@ -235,6 +235,8 @@ export async function createStore(databasePath, options = {}) {
       personal_channel_id TEXT NOT NULL DEFAULT '',
       timezone TEXT NOT NULL DEFAULT 'UTC',
       bot_display_name TEXT NOT NULL DEFAULT 'Jacob''s Orbit',
+      -- People who can look at the admin surfaces but cannot change anything.
+      fake_admin_ids TEXT NOT NULL DEFAULT '[]',
       daily_question_enabled INTEGER NOT NULL DEFAULT 1,
       daily_question_prompt TEXT NOT NULL DEFAULT '',
       daily_question_include_in_daily_update INTEGER NOT NULL DEFAULT 0,
@@ -485,6 +487,9 @@ export async function createStore(databasePath, options = {}) {
   );
   if (!existingSettingColumns.includes('bot_display_name')) {
     bindAndRun(database, "ALTER TABLE app_settings ADD COLUMN bot_display_name TEXT NOT NULL DEFAULT 'Jacob''s Orbit'");
+  }
+  if (!existingSettingColumns.includes('fake_admin_ids')) {
+    bindAndRun(database, "ALTER TABLE app_settings ADD COLUMN fake_admin_ids TEXT NOT NULL DEFAULT '[]'");
   }
   if (!existingSettingColumns.includes('daily_question_prompt')) {
     bindAndRun(database, "ALTER TABLE app_settings ADD COLUMN daily_question_prompt TEXT NOT NULL DEFAULT ''");
@@ -843,6 +848,20 @@ export async function createStore(databasePath, options = {}) {
         daily_update_thread_enabled: parseBoolean(settingsRow.daily_update_thread_enabled),
         daily_update_reminder_enabled: parseBoolean(settingsRow.daily_update_reminder_enabled),
       };
+    },
+
+    /** Slack ids allowed to view the admin surfaces without changing anything. */
+    getFakeAdminIds() {
+      return parseOwnerIds(this.getSettings().fake_admin_ids);
+    },
+
+    setFakeAdminIds(ids) {
+      const clean = [...new Set((ids || []).filter((id) => typeof id === 'string' && /^[UW][A-Z0-9]+$/.test(id)))];
+      bindAndRun(database, 'UPDATE app_settings SET fake_admin_ids = $ids WHERE id = 1', {
+        $ids: JSON.stringify(clean),
+      });
+      persist();
+      return clean;
     },
 
     updateSettings(patch) {

@@ -13,7 +13,7 @@
  *  - user     anyone else with a Slack account, whether signed in or anonymous.
  *             Aggregate stats only.
  */
-export const ROLES = { OWNER: 'owner', MANAGER: 'manager', USER: 'user' };
+export const ROLES = { OWNER: 'owner', MANAGER: 'manager', USER: 'user', FAKE_ADMIN: 'fake_admin' };
 
 /** A plausible Slack user id. Deliberately permissive: real ids are `U…`/`W…`. */
 export function isSlackUserId(value) {
@@ -82,16 +82,27 @@ export function createPermissions({ store }) {
 
   function resolve(slackUserId) {
     if (!slackUserId) {
-      return { role: null, isOwner: false, isManager: false, managedChannelIds: [] };
+      return { role: null, isOwner: false, isManager: false, fakeAdmin: false, managedChannelIds: [] };
     }
     if (isOwner(slackUserId)) {
-      return { role: ROLES.OWNER, isOwner: true, isManager: true, managedChannelIds: null };
+      return { role: ROLES.OWNER, isOwner: true, isManager: true, fakeAdmin: false, managedChannelIds: null };
+    }
+    if (isFakeAdmin(slackUserId)) {
+      // isManager so the channel and admin tabs open, but no managed ids, so no
+      // channel is actually theirs to change.
+      return {
+        role: ROLES.FAKE_ADMIN,
+        isOwner: false,
+        isManager: true,
+        fakeAdmin: true,
+        managedChannelIds: [],
+      };
     }
     const ids = managedChannelIds(slackUserId);
     if (ids.length > 0) {
-      return { role: ROLES.MANAGER, isOwner: false, isManager: true, managedChannelIds: ids };
+      return { role: ROLES.MANAGER, isOwner: false, isManager: true, fakeAdmin: false, managedChannelIds: ids };
     }
-    return { role: ROLES.USER, isOwner: false, isManager: false, managedChannelIds: [] };
+    return { role: ROLES.USER, isOwner: false, isManager: false, fakeAdmin: false, managedChannelIds: [] };
   }
 
   /** Owner or a manager of that specific channel. Never a manager of another. */
@@ -102,6 +113,18 @@ export function createPermissions({ store }) {
     return isOwner(userId) || channelOwners(channelId).includes(userId);
   }
 
+  /**
+   * A "fake admin": they can open every admin surface and read it, but every
+   * write is refused. Deliberately separate from isOwner so no existing check
+   * accidentally grants them anything.
+   */
+  function isFakeAdmin(userId) {
+    if (!userId || isOwner(userId)) {
+      return false;
+    }
+    return store.getFakeAdminIds().includes(userId);
+  }
+
   function isChannelOwner(userId) {
     if (!userId) {
       return false;
@@ -109,5 +132,13 @@ export function createPermissions({ store }) {
     return store.listHuddleChannels().some((channel) => parseOwnerIds(channel.owner_ids).includes(userId));
   }
 
-  return { isOwner, isChannelOwner, channelOwners, managedChannelIds, resolve, mayConfigureChannel };
+  return {
+    isOwner,
+    isFakeAdmin,
+    isChannelOwner,
+    channelOwners,
+    managedChannelIds,
+    resolve,
+    mayConfigureChannel,
+  };
 }
