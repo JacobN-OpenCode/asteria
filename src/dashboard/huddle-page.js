@@ -44,6 +44,12 @@ h1{font-size:24px;letter-spacing:-.01em;margin:0 0 4px}
 .fact dt{font-size:10.5px;letter-spacing:.13em;text-transform:uppercase;color:var(--ink-3);margin:0 0 3px}
 .fact dd{margin:0;font-size:19px;font-weight:600;font-family:var(--mono);letter-spacing:-.01em}
 .fact dd small{font-size:11px;font-weight:400;color:var(--ink-3);font-family:var(--sans)}
+.kicker{margin:0 0 8px;font-size:9.5px;letter-spacing:.22em;text-transform:uppercase;color:var(--accent);font-weight:700}
+.bar{height:4px;border-radius:3px;background:var(--line);margin-top:7px;overflow:hidden;max-width:260px}
+.bar i{display:block;height:100%;border-radius:3px;background:linear-gradient(90deg,var(--accent),var(--accent-bright))}
+.facts{grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:12px;margin:26px 0 30px}
+.fact{padding:15px 16px;border-radius:14px}
+.fact dd{font-size:23px;letter-spacing:-.02em}
 h2{font-size:12px;letter-spacing:.13em;text-transform:uppercase;color:var(--ink-3);margin:30px 0 10px;font-weight:600}
 table{width:100%;border-collapse:collapse;background:var(--surface);border-radius:var(--r);overflow:hidden;
   box-shadow:0 0 0 1px var(--line)}
@@ -155,6 +161,7 @@ export function renderHuddlePage(view) {
     { label: 'Started by', value: startedByName, text: true },
   ];
 
+  const longestStretch = Math.max(0, ...participants.map((participant) => participant.provableSeconds || 0));
   const rows = participants
     .map((participant, index) => {
       const medal = participant.longest
@@ -171,7 +178,11 @@ export function renderHuddlePage(view) {
         .join('');
       return `<tr${participant.longest ? ' class="longest"' : ''}>
 <td class="rank" style="color:${medal}">${index + 1}</td>
-<td>${personCell(participant.name, participant.avatarUrl)}${reasons ? `<div class="reasons">${reasons}</div>` : ''}</td>
+<td>${personCell(participant.name, participant.avatarUrl)}${reasons ? `<div class="reasons">${reasons}</div>` : ''}${
+        longestStretch > 0
+          ? `<div class="bar"><i style="width:${Math.max(2, Math.round(((participant.provableSeconds || 0) / longestStretch) * 100))}%"></i></div>`
+          : ''
+      }</td>
 <td class="num">${escapeHtml(formatHuddleLength(participant.durationSeconds))}</td>
 <td class="num">${participant.points ? `${participant.points}` : '<span class="muted">0</span>'}</td>
 </tr>`;
@@ -197,8 +208,9 @@ export function renderHuddlePage(view) {
 </header>
 
 <main>
-  <h1>Huddle overview<span class="status ${isLive ? 'live' : 'ended'}"><i></i>${isLive ? 'live now' : 'ended'}</span></h1>
-  <p class="sub">${escapeHtml(channelLabel)} · started ${escapeHtml(startedLabel)}${
+  <p class="kicker">orbit · huddle</p>
+  <h1>${escapeHtml(channelLabel)}<span class="status ${isLive ? 'live' : 'ended'}"><i></i>${isLive ? 'live now' : 'ended'}</span></h1>
+  <p class="sub">Started ${escapeHtml(startedLabel)}${
     endedLabel ? ` · ended ${escapeHtml(endedLabel)}` : ''
   } · <span class="muted">${escapeHtml(huddle.call_id)}</span></p>
 
