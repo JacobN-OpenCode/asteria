@@ -46,7 +46,7 @@ export function renderDashboardHtml({
 ${renderTabs(view, { isOwner: role === 'owner', isManager: role === 'manager', isAdminViewer })}
 
 <main>
-${view === 'home' ? homeView() : view === 'j-log' ? jLogView() : view === 'huddles' ? huddlesView() : view === 'users' ? usersView() : view === 'messages' ? messagesView() : adminView()}
+${view === 'home' ? homeView() : view === 'j-log' ? jLogView() : view === 'huddles' ? huddlesView() : view === 'users' ? usersView() : adminView()}
 </main>
 <div class="modal hidden" id="channel-modal" role="dialog" aria-modal="true" aria-labelledby="cm-title">
   <div class="modal-scrim" id="cm-scrim"></div>
@@ -135,7 +135,7 @@ function homeView() {
   <section class="stat-strip" id="stat-strip">
     ${statCell('stat-active', 'Huddles live', 'right now')}
     ${statCell('stat-24h', 'Huddles ended', 'last 24 hours')}
-    ${statCell('stat-members', 'People seen', 'in tracked huddles')}
+    ${statCell('stat-members', 'People seen', 'all time')}
     ${statCell('stat-channels', 'Channels', 'bot is in')}
     ${statCell('stat-score', 'Points awarded', 'on the board')}
   </section>

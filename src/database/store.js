@@ -2399,6 +2399,17 @@ export async function createStore(databasePath, options = {}) {
       persist();
     },
 
+    /** Flip one member's in-call flag without touching their times. */
+    setHuddleMemberPresence(callId, userId, isIn) {
+      bindAndRun(database, 'UPDATE huddle_members SET is_in = $is_in WHERE call_id = $call_id AND user_id = $user_id', {
+        $call_id: String(callId || ''),
+        $user_id: String(userId || ''),
+        $is_in: isIn ? 1 : 0,
+      });
+      persist();
+      return true;
+    },
+
     getHuddleMember(callId, userId) {
       return bindAndFetchOne(database, 'SELECT * FROM huddle_members WHERE call_id = $call_id AND user_id = $user_id', {
         $call_id: String(callId || ''),

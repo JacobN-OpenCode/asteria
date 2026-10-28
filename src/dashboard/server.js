@@ -18,7 +18,13 @@ import { ORBIT_FAVICON } from './theme.js';
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
 const SESSION_COOKIE = 'asteria_session';
 const SESSION_MAX_AGE_SECONDS = 60 * 60 * 24 * 30;
-const PAGES = { '/j-log': 'j-log', '/huddles': 'huddles', '/admin': 'admin', '/users': 'users', '/messages': 'messages' };
+const PAGES = {
+  '/j-log': 'j-log',
+  '/huddles': 'huddles',
+  '/admin': 'admin',
+  '/users': 'users',
+  '/messages': 'messages',
+};
 // Long enough to stop a channel being a nuisance for a while without needing a
 // separate unpause control.
 const PAUSE_SECONDS = 60 * 60 * 12;
@@ -299,12 +305,16 @@ people who were in the huddle.</p></div></body></html>`;
     });
     const attendanceByUser = new Map(attendance.participants.map((entry) => [entry.userId, entry]));
 
+    const membersByUser = new Map(members.map((member) => [member.user_id, member]));
     const participants = [
       ...attendance.participants.map((entry) => ({
         userId: entry.userId,
-        durationSeconds: entry.partial ? null : entry.seconds,
+        // Keep the number. A partial stretch used to render as 0m, which read as
+        // "never here" for somebody who was in the call for hours.
+        durationSeconds: entry.seconds,
         provableSeconds: entry.seconds,
         partial: entry.partial,
+        isIn: Boolean(Number(membersByUser.get(entry.userId)?.is_in)),
         points: awardsByUser.get(entry.userId)?.points ?? 0,
         reasons: awardsByUser.get(entry.userId)?.reasons ?? [],
       })),
@@ -320,6 +330,7 @@ people who were in the huddle.</p></div></body></html>`;
                 : null,
           provableSeconds: 0,
           partial: true,
+          isIn: Boolean(Number(member.is_in)),
           points: awardsByUser.get(member.user_id)?.points ?? 0,
           reasons: awardsByUser.get(member.user_id)?.reasons ?? [],
         })),
@@ -1034,7 +1045,9 @@ people who were in the huddle.</p></div></body></html>`;
       if (auth_?.permissions.fakeAdmin) return sike(res);
       if (!requireOwner(res, auth_)) return;
       const body = await readJsonBody(req, 8192);
-      const userId = String(body?.userId || '').trim().toUpperCase();
+      const userId = String(body?.userId || '')
+        .trim()
+        .toUpperCase();
       const text = String(body?.text || '').trim();
       if (!isSlackUserId(userId)) {
         sendJson(res, 400, { error: 'That does not look like a Slack user id' });
@@ -1085,15 +1098,15 @@ people who were in the huddle.</p></div></body></html>`;
       if (auth_?.permissions.fakeAdmin) return sike(res);
       if (!requireOwner(res, auth_)) return;
       const body = await readJsonBody(req);
-      const userId = String(body?.userId || '').trim().toUpperCase();
+      const userId = String(body?.userId || '')
+        .trim()
+        .toUpperCase();
       if (!isSlackUserId(userId)) {
         sendJson(res, 400, { error: 'That does not look like a Slack user id' });
         return;
       }
       const current = store.getFakeAdminIds();
-      const next = body?.enabled
-        ? [...new Set([...current, userId])]
-        : current.filter((id) => id !== userId);
+      const next = body?.enabled ? [...new Set([...current, userId])] : current.filter((id) => id !== userId);
       store.setFakeAdminIds(next);
       sendJson(res, 200, { ok: true, fakeAdminIds: next });
       return;

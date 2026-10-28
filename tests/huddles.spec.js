@@ -399,6 +399,46 @@ describe('huddles app home tab', () => {
 });
 
 describe('huddle tracker integration', () => {
+  it('adds people Slack lists in the huddle even when their join event was missed', async () => {
+    const store = await createTestStore();
+    const client = createBasicClient();
+    const { handlers, tracker } = createTrackerHarness({ store, client, ownerId: 'UOWNER' });
+
+    const threadMessage = (participants, history) => ({
+      message: {
+        subtype: 'huddle_thread',
+        channel: 'Crandom',
+        ts: '172000.100000',
+        room: {
+          id: 'Rmissed',
+          call_family: 'huddle',
+          created_by: 'UOWNER',
+          date_start: 172000,
+          date_end: 0,
+          thread_root_ts: '172000.000000',
+          channels: ['Crandom'],
+          participants,
+          participant_history: history,
+        },
+      },
+    });
+
+    // UMISSED never produced a presence event the bot saw, but Slack's roster
+    // says they are in the call. That used to mean they never appeared at all.
+    await handlers.message(threadMessage(['UOWNER', 'UMISSED'], ['UOWNER', 'UMISSED']));
+    const members = store.listHuddleMembers('Rmissed');
+    assert.deepEqual(members.map((m) => m.user_id).sort(), ['UMISSED', 'UOWNER']);
+    assert.equal(Number(members.find((m) => m.user_id === 'UMISSED').is_in), 1, 'shown as in the call');
+
+    // A later snapshot without them in the live list marks them as gone, but
+    // keeps them on the roster.
+    await handlers.message(threadMessage(['UOWNER'], ['UOWNER', 'UMISSED']));
+    const after = store.listHuddleMembers('Rmissed');
+    assert.equal(after.length, 2, 'still on the roster');
+    assert.equal(Number(after.find((m) => m.user_id === 'UMISSED').is_in), 0, 'but no longer in');
+    tracker.stop();
+  });
+
   it('tracks a huddle, prompts once when it ends, and generates a review', async () => {
     const store = await createTestStore();
     const client = createBasicClient();

@@ -553,6 +553,55 @@ export function createHuddleTracker({ app, store, client, logger, ownerId = '', 
     }
   }
 
+  /**
+   * Merge Slack's roster into the member table.
+   *
+   * Presence events can be missed (an app restart, a dropped websocket, a huddle
+   * joined while the bot was redeploying), and a missed join used to mean the
+   * person never appeared on the huddle page at all. Slack's room payload is the
+   * authority, so it is merged on every thread message and once at startup for
+   * huddles that are already running.
+   */
+  function mergeRoomRoster(room) {
+    if (!room?.id) {
+      return;
+    }
+    const current = Array.isArray(room.participants) ? room.participants.filter(Boolean) : null;
+    const everIn = [...new Set([...(room.participant_history || []), ...(current || [])].filter(Boolean))];
+    for (const userId of everIn) {
+      if (!store.getHuddleMember(room.id, userId)) {
+        store.upsertHuddleMember({
+          callId: room.id,
+          userId,
+          firstSeenAt: room.date_start || 0,
+          lastSeenAt: room.date_start || 0,
+          isIn: Boolean(current && current.includes(userId)),
+        });
+      }
+    }
+    // Only trust the live list when Slack actually sent one; an empty list on a
+    // closing message would mark everybody out before the end is finalised.
+    if (current && current.length > 0) {
+      const inNow = new Set(current);
+      for (const member of store.listHuddleMembers(room.id)) {
+        const shouldBeIn = inNow.has(member.user_id);
+        if (Boolean(Number(member.is_in)) !== shouldBeIn) {
+          store.setHuddleMemberPresence(room.id, member.user_id, shouldBeIn);
+        }
+      }
+    }
+  }
+
+  /** Catch up on huddles that were already running when this process started. */
+  async function reconcileActiveRosters() {
+    for (const huddle of store.listActiveHuddles()) {
+      const room = await fetchRoomState(huddle).catch(() => null);
+      if (room) {
+        mergeRoomRoster(room);
+      }
+    }
+  }
+
   async function handleHuddleThreadMessage(message) {
     const room = message?.room;
     if (room?.call_family !== 'huddle' || !room.id) {
@@ -586,6 +635,7 @@ export function createHuddleTracker({ app, store, client, logger, ownerId = '', 
       // timestamp is when we last heard anything, not the moment we wrote.
       lastSeenAt: slackTsToEpochSeconds(message.ts) || (endedAt ?? 0),
     });
+    mergeRoomRoster(room);
     if (existing?.status === 'unverified') {
       // The channel is confirmed, so this huddle is ours and the placeholder can
       // be promoted. Slack reported joins while it was held, and those were not
@@ -1549,6 +1599,10 @@ export function createHuddleTracker({ app, store, client, logger, ownerId = '', 
     void handleMemberJoinedChannel(payload).catch((error) => {
       logger.error('Backfill huddles after joining a channel', error);
     });
+  });
+
+  void reconcileActiveRosters().catch((error) => {
+    logger.warn?.('Could not catch up the rosters of running huddles', error);
   });
 
   const sweepTimer = setInterval(() => {
