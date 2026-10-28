@@ -46,7 +46,7 @@ export function renderDashboardHtml({
 ${renderTabs(view, { isOwner: role === 'owner', isManager: role === 'manager', isAdminViewer })}
 
 <main>
-${view === 'home' ? homeView() : view === 'j-log' ? jLogView() : view === 'huddles' ? huddlesView() : view === 'users' ? usersView() : adminView()}
+${view === 'home' ? homeView() : view === 'j-log' ? jLogView() : view === 'huddles' ? huddlesView() : view === 'recaps' ? recapsView() : view === 'users' ? usersView() : adminView()}
 </main>
 <div class="modal hidden" id="channel-modal" role="dialog" aria-modal="true" aria-labelledby="cm-title">
   <div class="modal-scrim" id="cm-scrim"></div>
