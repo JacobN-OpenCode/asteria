@@ -460,6 +460,19 @@ export async function createStore(databasePath, options = {}) {
     -- breakdown on a huddle's own page. Reasons are kept as written by
     -- computeHuddlePoints ("12m", "rank 1", "longest message") so the wording
     -- on the page is the wording the rules produced.
+    CREATE TABLE IF NOT EXISTS huddle_recaps (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      channel_id TEXT NOT NULL,
+      user_id TEXT NOT NULL,
+      body TEXT NOT NULL,
+      links TEXT NOT NULL DEFAULT '[]',
+      policy_accepted_at TEXT NOT NULL,
+      created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_huddle_recaps_channel ON huddle_recaps(channel_id);
+    CREATE INDEX IF NOT EXISTS idx_huddle_recaps_user ON huddle_recaps(user_id);
+
     CREATE TABLE IF NOT EXISTS huddle_awards (
       huddle_id TEXT NOT NULL,
       user_id TEXT NOT NULL,
@@ -1784,6 +1797,76 @@ export async function createStore(databasePath, options = {}) {
       return bindAndFetchOne(database, 'SELECT * FROM huddle_channels WHERE channel_id = $channel_id', {
         $channel_id: channelId,
       });
+    },
+
+    /** Has this person ever been in a huddle in this channel? */
+    hasHuddleMemberInChannel(userId, channelId) {
+      return Boolean(
+        bindAndFetchOne(
+          database,
+          `
+          SELECT 1 AS ok FROM huddle_members m
+          JOIN huddles h ON h.call_id = m.call_id
+          WHERE m.user_id = $user_id AND h.channel_id = $channel_id
+          LIMIT 1
+        `,
+          { $user_id: String(userId || ''), $channel_id: String(channelId || '') },
+        ),
+      );
+    },
+
+    addHuddleRecap({ channelId, userId, body, links = [], policyAcceptedAt }) {
+      bindAndRun(
+        database,
+        `
+        INSERT INTO huddle_recaps (channel_id, user_id, body, links, policy_accepted_at)
+        VALUES ($channel_id, $user_id, $body, $links, $policy)
+      `,
+        {
+          $channel_id: String(channelId || ''),
+          $user_id: String(userId || ''),
+          $body: String(body || ''),
+          $links: JSON.stringify(Array.isArray(links) ? links : []),
+          $policy: String(policyAcceptedAt || new Date().toISOString()),
+        },
+      );
+      persist();
+      return true;
+    },
+
+    listHuddleRecaps(channelId, { userId = '' } = {}) {
+      const rows = userId
+        ? bindAndFetchAll(
+            database,
+            'SELECT * FROM huddle_recaps WHERE channel_id = $channel_id AND user_id = $user_id ORDER BY id DESC',
+            { $channel_id: String(channelId || ''), $user_id: String(userId) },
+          )
+        : bindAndFetchAll(
+            database,
+            'SELECT * FROM huddle_recaps WHERE channel_id = $channel_id ORDER BY id DESC',
+            { $channel_id: String(channelId || '') },
+          );
+      return rows.map((row) => {
+        let links = [];
+        try {
+          const parsed = JSON.parse(row.links || '[]');
+          links = Array.isArray(parsed) ? parsed.filter((link) => typeof link === 'string') : [];
+        } catch {
+          links = [];
+        }
+        return { ...row, links };
+      });
+    },
+
+    countHuddleRecaps() {
+      const out = {};
+      for (const row of bindAndFetchAll(
+        database,
+        'SELECT channel_id, COUNT(1) AS n FROM huddle_recaps GROUP BY channel_id',
+      )) {
+        out[row.channel_id] = Number(row.n) || 0;
+      }
+      return out;
     },
 
     listHuddleChannels() {
