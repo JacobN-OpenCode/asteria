@@ -226,6 +226,25 @@ describe('tabbed pages', () => {
     );
   });
 
+  it('adding a manager does not reset the channel', async () => {
+    await send(
+      '/api/huddles/config',
+      { channelId: CHANNEL, enabled: 0, auto_replies: 0, restrict_triggers: 1 },
+      ownerCookie,
+    );
+    await send('/api/huddles/owners', { channelId: CHANNEL, add: 'U0NEWMAN02' }, ownerCookie);
+
+    const data = await (await get('/api/huddles/config', ownerCookie)).json();
+    const channel = data.channels.find((c) => c.channelId === CHANNEL);
+    assert(
+      channel.owners.some((o) => o.id === 'U0NEWMAN02'),
+      'the manager was added',
+    );
+    assert.equal(channel.enabled, false, 'the enabled flag survived');
+    assert.equal(channel.auto_replies, false, 'the replies flag survived');
+    assert.equal(channel.restrict_triggers, true, 'the triggers flag survived');
+  });
+
   it('lets the owner adopt a channel the bot is already in', async () => {
     const before = await (await get('/api/huddles/config', ownerCookie)).json();
     assert(

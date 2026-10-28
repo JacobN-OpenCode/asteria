@@ -872,7 +872,9 @@ people who were in the huddle.</p></div></body></html>`;
         return;
       }
       const next = remove ? current.filter((id) => id !== remove) : add ? [...new Set([...current, add])] : current;
-      store.upsertHuddleChannel({ channelId, ownerIds: next });
+      // Narrow write: the whole-row upsert here would reset the name and every
+      // toggle just because somebody added a manager.
+      store.setHuddleChannelOwners(channelId, next);
       sendJson(res, 200, { ok: true, ownerIds: next });
       return;
     }

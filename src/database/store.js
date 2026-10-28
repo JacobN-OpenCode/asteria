@@ -4,6 +4,7 @@ import { fileURLToPath } from 'node:url';
 import initSqlJs from 'sql.js';
 import { summariseAttendance } from '../huddles/attendance.js';
 import { parseParticipantHistory } from '../huddles/points.js';
+import { isSlackUserId } from '../permissions.js';
 import { DEFAULT_QUESTION_PROMPT } from '../services/ai.js';
 import { normalizeTimeValue } from '../utils/time.js';
 
@@ -2073,6 +2074,24 @@ export async function createStore(databasePath, options = {}) {
           $channel_id: channelId,
           $owner_ids: JSON.stringify([id]),
         },
+      );
+      persist();
+      return true;
+    },
+
+    /** Replace a channel's manager list without touching any other column. */
+    setHuddleChannelOwners(channelId, ownerIds) {
+      if (!channelId) {
+        return false;
+      }
+      const ids = [...new Set((ownerIds || []).filter(isSlackUserId))];
+      bindAndRun(
+        database,
+        `
+        INSERT INTO huddle_channels (channel_id, owner_ids) VALUES ($channel_id, $owner_ids)
+        ON CONFLICT(channel_id) DO UPDATE SET owner_ids = excluded.owner_ids, updated_at = CURRENT_TIMESTAMP
+      `,
+        { $channel_id: channelId, $owner_ids: JSON.stringify(ids) },
       );
       persist();
       return true;
