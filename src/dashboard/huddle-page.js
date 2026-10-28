@@ -142,6 +142,25 @@ function personCell(name, avatarUrl) {
  * @param {string} view.startedLabel / endedLabel
  * @param {boolean} view.reconstructed  true when this breakdown was rebuilt after the fact
  */
+/**
+ * What to print in "In the call".
+ *
+ * A partial stretch used to print 0m, which reads as "never here" for somebody
+ * who was actually in the call for hours. Show the provable floor instead and
+ * say so, and call out anyone Slack still lists as present.
+ */
+function timeLabel(participant) {
+  const seconds = Number(participant.provableSeconds) || 0;
+  const inNow = participant.isIn ? ' · in now' : '';
+  if (seconds > 0) {
+    return (participant.partial ? 'at least ' : '') + formatHuddleLength(seconds) + inNow;
+  }
+  if (participant.isIn) {
+    return 'in now';
+  }
+  return participant.partial ? 'unknown' : '0m';
+}
+
 export function renderHuddlePage(view) {
   const {
     huddle,
@@ -176,7 +195,7 @@ export function renderHuddlePage(view) {
     // so the poller below can update them without reloading the page.
     { label: 'Points awarded', value: `${totalPoints}`, live: 'points' },
     { label: 'Length', value: formatHuddleLength(durationSeconds) },
-    { label: 'In the huddle', value: `${participants.length}`, live: 'participants' },
+    { label: 'People (ever)', value: `${participants.length}`, live: 'participants' },
     { label: 'Started by', value: startedByName, text: true },
   ];
 
@@ -202,7 +221,7 @@ export function renderHuddlePage(view) {
           ? `<div class="bar"><i style="width:${Math.max(2, Math.round(((participant.provableSeconds || 0) / longestStretch) * 100))}%"></i></div>`
           : ''
       }</td>
-<td class="num">${escapeHtml(formatHuddleLength(participant.durationSeconds))}</td>
+<td class="num">${escapeHtml(timeLabel(participant))}</td>
 <td class="num">${participant.points ? `${participant.points}` : '<span class="muted">0</span>'}</td>
 </tr>`;
     })

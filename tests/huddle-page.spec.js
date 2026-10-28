@@ -4,6 +4,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { after, before, describe, it } from 'node:test';
 
+import { renderHuddlePage } from '../src/dashboard/huddle-page.js';
 import { createDashboardServer } from '../src/dashboard/server.js';
 import { createStore } from '../src/database/store.js';
 
@@ -184,5 +185,45 @@ describe('huddle pages', () => {
     assert(participants && participants[1] === '2', 'it starts showing the real head count');
     const points = /data-live="points"[^>]*>([0-9]+)</.exec(html);
     assert(points && points[1] === '24', 'and the real points, which come from awards not the roster');
+  });
+});
+
+describe('proving a partial stretch', () => {
+  it('shows the provable floor instead of 0m, and who is still in', () => {
+    const html = renderHuddlePage({
+      huddle: { call_id: 'R1', channel_id: 'C1' },
+      participants: [
+        {
+          userId: 'U1',
+          name: 'long',
+          durationSeconds: 18000,
+          provableSeconds: 18000,
+          partial: true,
+          isIn: true,
+          points: 0,
+          reasons: [],
+        },
+        {
+          userId: 'U2',
+          name: 'none',
+          durationSeconds: 0,
+          provableSeconds: 0,
+          partial: true,
+          isIn: false,
+          points: 0,
+          reasons: [],
+        },
+      ],
+      channel: { name: 'pubd', isPrivate: false },
+      totalPoints: 0,
+      startedLabel: 'today',
+      endedLabel: '',
+      durationSeconds: 21600,
+      isLive: true,
+    });
+    assert.match(html, /at least 5h/, 'a partial four hour stretch is a floor, not zero');
+    assert.match(html, /in now/, 'the page says who Slack still lists as present');
+    assert(!html.includes('>0m<'), 'nobody is printed as 0m');
+    assert.match(html, /People \(ever\)/, 'the count is labelled honestly');
   });
 });
