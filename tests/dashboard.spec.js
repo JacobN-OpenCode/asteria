@@ -299,6 +299,34 @@ describe('dashboard server', () => {
     }
   });
 
+  it('lets the owner send a DM as the bot, signed off from @jacob', async () => {
+    const store = await createTestStore();
+    const harness = await startDashboard({ store });
+    try {
+      const owner = await signIn(harness);
+      const res = await fetch(`${harness.base}/api/admin/messages`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', cookie: owner.cookie },
+        body: JSON.stringify({ userId: 'U0PLAIN01', text: 'hello there' }),
+      });
+      assert.equal(res.status, 200);
+      const sent = harness.client.chat.postMessage.mock.calls.at(-1).arguments[0];
+      assert.equal(sent.channel, 'U0PLAIN01', 'the DM goes to the person, not a channel');
+      assert(sent.text.startsWith('hello there'));
+      assert(sent.text.trim().endsWith('from @jacob'), 'the sign off is always appended');
+
+      const user = await signIn(harness, { slackUserId: 'U0PLAIN01' });
+      const denied = await fetch(`${harness.base}/api/admin/messages`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', cookie: user.cookie },
+        body: JSON.stringify({ userId: 'U0PLAIN01', text: 'nope' }),
+      });
+      assert.equal(denied.status, 403, 'a normal user cannot message as the bot');
+    } finally {
+      await harness.stop();
+    }
+  });
+
   it('only serves the activity log to the owner', async () => {
     const store = await createTestStore();
     store.recordTriggerLog({ userId: 'U1', action: 'huddle_join', detail: 'R1', channelId: 'Cbot' });

@@ -43,8 +43,10 @@ export async function describeHuddleChannels({ store, botChannels, userId = '', 
   }
   const inBot = Array.isArray(botIds) ? new Set(botIds) : null;
 
-  const rows = store.listHuddleChannels();
-  const configuredIds = new Set(rows.map((row) => row.channel_id));
+  // Includes channels that have recorded a huddle but have no settings row yet,
+  // so they get a real (defaults filled) card instead of being unconfigurable.
+  const rows = store.listTrackedHuddleChannels();
+  const shownIds = new Set(rows.map((row) => row.channel_id));
   const now = Math.floor(Date.now() / 1000);
 
   const channels = rows
@@ -62,7 +64,7 @@ export async function describeHuddleChannels({ store, botChannels, userId = '', 
         ownerIds: parseOwnerIds(row.owner_ids),
         pausedUntil,
         paused: pausedUntil > now,
-        configured: true,
+        configured: row.configured !== false,
       };
     })
     .sort((a, b) => (a.name || a.channelId).localeCompare(b.name || b.channelId));
@@ -70,7 +72,7 @@ export async function describeHuddleChannels({ store, botChannels, userId = '', 
   const available =
     isOwner && inBot
       ? botIds
-          .filter((id) => !configuredIds.has(id))
+          .filter((id) => !shownIds.has(id))
           .map((id) => ({ channelId: id, name: names[id] || '' }))
           .sort((a, b) => (a.name || a.channelId).localeCompare(b.name || b.channelId))
       : [];

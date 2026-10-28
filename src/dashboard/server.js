@@ -18,7 +18,7 @@ import { ORBIT_FAVICON } from './theme.js';
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
 const SESSION_COOKIE = 'asteria_session';
 const SESSION_MAX_AGE_SECONDS = 60 * 60 * 24 * 30;
-const PAGES = { '/j-log': 'j-log', '/huddles': 'huddles', '/admin': 'admin', '/users': 'users' };
+const PAGES = { '/j-log': 'j-log', '/huddles': 'huddles', '/admin': 'admin', '/users': 'users', '/messages': 'messages' };
 // Long enough to stop a channel being a nuisance for a while without needing a
 // separate unpause control.
 const PAUSE_SECONDS = 60 * 60 * 12;
@@ -855,7 +855,7 @@ people who were in the huddle.</p></div></body></html>`;
         redirect(res, '/login');
         return;
       }
-      const needsOwner = route === '/admin' || route === '/j-log' || route === '/users';
+      const needsOwner = route === '/admin' || route === '/j-log' || route === '/users' || route === '/messages';
       const needsManager = route === '/huddles';
       const allowedOwnerPage = auth_.permissions.isOwner || auth_.permissions.fakeAdmin;
       if ((needsOwner && !allowedOwnerPage) || (needsManager && !auth_.permissions.isManager)) {
@@ -1028,6 +1028,48 @@ people who were in the huddle.</p></div></body></html>`;
 
     // Who has a way in, and what they are. Admin viewers can read this; only the
     // owner can act on it, and there is no write endpoint here at all.
+    // The owner can DM anyone as the bot. A fake admin sees the form and gets the
+    // joke when they press send.
+    if (route === '/api/admin/messages' && method === 'POST') {
+      if (auth_?.permissions.fakeAdmin) return sike(res);
+      if (!requireOwner(res, auth_)) return;
+      const body = await readJsonBody(req, 8192);
+      const userId = String(body?.userId || '').trim().toUpperCase();
+      const text = String(body?.text || '').trim();
+      if (!isSlackUserId(userId)) {
+        sendJson(res, 400, { error: 'That does not look like a Slack user id' });
+        return;
+      }
+      if (!text) {
+        sendJson(res, 400, { error: 'Write something first' });
+        return;
+      }
+      if (text.length > 3000) {
+        sendJson(res, 400, { error: 'Keep it under 3000 characters' });
+        return;
+      }
+      try {
+        const response = await client.chat.postMessage({
+          channel: userId,
+          text: `${text}\n\nfrom @jacob`,
+        });
+        store.recordTriggerLog({
+          userId: auth_.session.slack_user_id,
+          action: 'admin_dm_sent',
+          detail: userId,
+          channelId: userId,
+        });
+        sendJson(res, 200, { ok: true, ts: response?.ts || '' });
+      } catch (error) {
+        logger.warn?.('[dashboard] admin DM failed', error?.data?.error || error?.message || error);
+        sendJson(res, 502, {
+          error: 'Slack would not deliver that message',
+          detail: String(error?.data?.error || error?.message || error),
+        });
+      }
+      return;
+    }
+
     if (route === '/api/admin/users' && method === 'GET') {
       if (!isAdminViewer(auth_)) {
         sendJson(res, 403, { error: 'Owner only' });

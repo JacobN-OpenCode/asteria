@@ -116,6 +116,7 @@ if (document.getElementById('about-modal')) {
   else if ('${view}' === 'huddles') { loadHuddles(); wireHuddles(); }
   else if ('${view}' === 'admin') { loadAdmin(); }
   else if ('${view}' === 'users') { loadUsers(); }
+  else if ('${view}' === 'messages') { loadMessages(); }
 }
 </script>
 </body>
@@ -195,6 +196,7 @@ const TABS = [
   { id: 'huddles', label: 'Orbit Huddles', manager: true },
   { id: 'admin', label: 'Orbit Admin', owner: true },
   { id: 'users', label: 'Orbit Users', owner: true },
+  { id: 'messages', label: 'Orbit Messages', owner: true },
 ];
 
 const VIEWS = {
@@ -203,6 +205,7 @@ const VIEWS = {
   huddles: { title: 'orbit huddles' },
   admin: { title: 'orbit admin' },
   users: { title: 'orbit users' },
+  messages: { title: 'orbit messages' },
 };
 
 /**
@@ -351,6 +354,38 @@ function huddlesView() {
     <p class="sub" style="margin:0 0 12px">These already score huddles with the defaults, but they never show up on the
       dashboard until they have a settings row. Track one to give it a card here.</p>
     <div class="cardlist" id="hc-available"></div>
+  </section>`;
+}
+
+function messagesView() {
+  return `  <section class="stage">
+  <section class="hero">
+    <p class="kicker">orbit messages</p>
+    <h1>Say it <span class="accent">as the bot</span>.</h1>
+    <p class="sub">Send a DM as Jacob's Orbit. Every message ends with <b>from @jacob</b>, and only the owner
+      can send one.</p>
+  </section>
+  </section>
+
+  <section class="panel">
+    <header class="panel-head"><h2>New message</h2><span class="tag">owner only</span></header>
+    <div class="form">
+      <div class="field">
+        <label for="msg-user">To</label>
+        <input type="text" id="msg-user" list="msg-people" placeholder="U0ABC123, or pick a name" autocomplete="off">
+        <datalist id="msg-people"></datalist>
+        <span class="hint">Pick someone from Orbit Users, or paste their Slack user id.</span>
+      </div>
+      <div class="field">
+        <label for="msg-text">Message</label>
+        <textarea id="msg-text" placeholder="Write the message..."></textarea>
+        <span class="hint">Sent as the bot, with <b>from @jacob</b> added underneath.</span>
+      </div>
+      <div class="row-actions">
+        <button class="btn" type="button" id="msg-send">Send DM</button>
+        <span class="saved" id="msg-status"></span>
+      </div>
+    </div>
   </section>`;
 }
 
@@ -1498,6 +1533,44 @@ function wireHuddles() {
     post('/api/huddles/owners', { channelId: row.dataset.channel, add: value })
       .then(() => loadHuddles())
       .catch(() => {});
+  });
+}
+
+function loadMessages() {
+  fetch(base + '/api/admin/users')
+    .then((r) => r.json())
+    .then((d) => {
+      const list = $('msg-people');
+      if (!list) return;
+      list.innerHTML = (d.users || [])
+        .map((user) => '<option value="' + escapeHtml(user.id) + '">' +
+          escapeHtml(user.name || user.id) + ' (' + escapeHtml(user.role) + ')</option>')
+        .join('');
+    })
+    .catch(() => {});
+  const send = $('msg-send');
+  if (!send) return;
+  send.addEventListener('click', () => {
+    const userId = $('msg-user').value.trim().toUpperCase();
+    const text = $('msg-text').value.trim();
+    const status = $('msg-status');
+    if (!userId || !text) {
+      status.textContent = 'need a person and a message';
+      return;
+    }
+    send.disabled = true;
+    status.textContent = '';
+    post('/api/admin/messages', { userId, text })
+      .then(() => {
+        status.textContent = 'sent';
+        $('msg-text').value = '';
+      })
+      .catch(() => {
+        status.textContent = 'not sent';
+      })
+      .finally(() => {
+        send.disabled = false;
+      });
   });
 }
 

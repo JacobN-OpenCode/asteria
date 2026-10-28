@@ -850,9 +850,20 @@ export async function createStore(databasePath, options = {}) {
       };
     },
 
-    /** Slack ids allowed to view the admin surfaces without changing anything. */
+    /**
+     * Slack ids allowed to view the admin surfaces without changing anything.
+     *
+     * Read from the settings row and from ORBIT_FAKE_ADMINS, unioned. The env
+     * list is the safety net: the settings row lives in a database the bot holds
+     * in memory, and a process that started before the row was written has
+     * silently overwritten it once already.
+     */
     getFakeAdminIds() {
-      return parseOwnerIds(this.getSettings().fake_admin_ids);
+      const stored = parseOwnerIds(this.getSettings().fake_admin_ids);
+      const fromEnv = String(process.env.ORBIT_FAKE_ADMINS || '')
+        .split(/[,\s]+/)
+        .filter((id) => /^[UW][A-Z0-9]+$/.test(id));
+      return [...new Set([...stored, ...fromEnv])];
     },
 
     setFakeAdminIds(ids) {
