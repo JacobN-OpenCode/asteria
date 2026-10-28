@@ -293,3 +293,59 @@ describe('the golf bit', () => {
     tracker.stop();
   });
 });
+
+describe('the 67 bit', () => {
+  it('answers when Jacob says 67, in any channel the bot is in', async () => {
+    const store = await createTestStore();
+    const client = createBasicClient();
+    // Channel rules are hostile on purpose: tracking off, replies off, restricted.
+    const { handlers, tracker } = createHarness({ store, client, ownerIds: ['UCM'] });
+    store.setHuddleChannelFlag('Cgolf', 'enabled', 0);
+    store.setHuddleChannelFlag('Cgolf', 'auto_replies', 0);
+    store.setHuddleChannelFlag('Cgolf', 'restrict_triggers', 1);
+    store.setHuddleChannelFlag('Cgolf', 'paused_until', Math.floor(Date.now() / 1000) + 3600);
+
+    await handlers.message(say({ text: '67', user: 'UOWNER' }));
+    await flush();
+
+    assert.equal(client.chat.postMessage.mock.callCount(), 1, 'one reply despite every rule being off');
+    const posted = client.chat.postMessage.mock.calls[0].arguments[0];
+    assert.equal(posted.channel, 'Cgolf');
+    assert(
+      ['6 7', '6 7 🗣️', 'six seven 🗣️', '6 7. no notes.'].includes(posted.text),
+      `a meme line, got: ${posted.text}`,
+    );
+    assert(
+      store.listTriggerLog().some((entry) => entry.action === 'sixty_seven'),
+      'logged',
+    );
+    tracker.stop();
+  });
+
+  it('ignores everybody else, and numbers that merely contain 67', async () => {
+    const store = await createTestStore();
+    const client = createBasicClient();
+    const { handlers, tracker } = createHarness({ store, client });
+
+    await handlers.message(say({ text: '67', user: 'UGUEST' }));
+    await handlers.message(say({ text: '1967 was a year', user: 'UOWNER' }));
+    await handlers.message(say({ text: '670 points', user: 'UOWNER' }));
+    await flush();
+
+    assert.equal(client.chat.postMessage.mock.callCount(), 0, 'nothing fired');
+    tracker.stop();
+  });
+
+  it('does not double up on a burst', async () => {
+    const store = await createTestStore();
+    const client = createBasicClient();
+    const { handlers, tracker } = createHarness({ store, client, ownerIds: ['UCM'] });
+
+    await handlers.message(say({ text: '67', user: 'UOWNER' }));
+    await handlers.message(say({ text: '67!!', user: 'UOWNER' }));
+    await flush();
+
+    assert.equal(client.chat.postMessage.mock.callCount(), 1, 'one reply per burst');
+    tracker.stop();
+  });
+});
