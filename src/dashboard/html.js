@@ -1515,15 +1515,32 @@ function loadUsers() {
       setText('users-tag', users.length + ' people');
       $('users-list').innerHTML = users.length
         ? users.map((user) =>
-            '<div class="cardrow"><div class="hd"><div class="nm">' +
-              '<img class="avatar" src="' + base + '/avatar?u=' + encodeURIComponent(user.id) + '" alt="">' +
-              '<span>' + escapeHtml(user.name || user.id) + '</span>' +
-              '<span class="tag' + (user.role === 'owner' ? ' ok' : '') + '">' + escapeHtml(user.role) + '</span>' +
-            '</div><span class="id">' + escapeHtml(user.id) + '</span></div>' +
-            '<div class="cm-sub">' + (user.lastLoginAt ? 'last sign in ' + escapeHtml(String(user.lastLoginAt).slice(0, 16).replace('T', ' ')) : 'has not signed in') +
-              ' · leaderboard ' + (user.optedIn ? 'on' : 'off') + '</div></div>',
+            '<div class="cardrow" data-user="' + escapeHtml(user.id) + '">' +
+              '<div class="hd"><div class="nm">' +
+                '<img class="avatar" src="' + base + '/avatar?u=' + encodeURIComponent(user.id) + '" alt="">' +
+                '<span>' + escapeHtml(user.name || user.id) + '</span>' +
+                '<span class="tag' + (user.role === 'owner' ? ' ok' : '') + '">' + escapeHtml(user.role) + '</span>' +
+              '</div><span class="id">' + escapeHtml(user.id) + '</span></div>' +
+              '<div class="cm-sub">' + (user.lastLoginAt ? 'last sign in ' + escapeHtml(String(user.lastLoginAt).slice(0, 16).replace('T', ' ')) : 'has not signed in') +
+                ' · leaderboard ' + (user.optedIn ? 'on' : 'off') + '</div>' +
+              '<div class="row-actions">' +
+                '<button class="btn ghost" type="button" data-fake="' + escapeHtml(user.id) + '" data-on="' +
+                  (user.fakeAdmin ? 'true' : 'false') + '">Admin: ' + (user.fakeAdmin ? 'on' : 'off') + '</button>' +
+                '<span class="saved" data-saved> saved</span>' +
+              '</div>' +
+            '</div>',
           ).join('')
         : '<div class="emptynote">No users yet.</div>';
+      $('users-list').onclick = (event) => {
+        const btn = event.target.closest('button[data-fake]');
+        if (!btn) return;
+        btn.disabled = true;
+        post('/api/admin/fake-admins', { userId: btn.dataset.fake, enabled: btn.dataset.on !== 'true' })
+          .then(() => loadUsers())
+          .catch(() => {
+            btn.disabled = false;
+          });
+      };
     })
     .catch(() => {
       $('users-list').innerHTML = '<div class="emptynote">Could not load users.</div>';

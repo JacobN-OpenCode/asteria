@@ -19,9 +19,13 @@ import { parseOwnerIds } from '../permissions.js';
  * `names` comes from Slack so a channel never renders as a raw C… id when the
  * settings row was created without one.
  */
-export async function describeHuddleChannels({ store, botChannels, userId = '' }) {
+export async function describeHuddleChannels({ store, botChannels, userId = '', isAdminViewer = false }) {
   const viewerId = String(userId || '');
-  const isOwner = Boolean(viewerId) && viewerId === store.getSettings().personal_channel_owner_id;
+  // An admin viewer (the fake admin role) gets the owner's view: every channel,
+  // and the list of channels that have no settings yet.
+  const isOwner =
+    Boolean(isAdminViewer) ||
+    (Boolean(viewerId) && viewerId === store.getSettings().personal_channel_owner_id);
 
   let botIds = null;
   let names = {};

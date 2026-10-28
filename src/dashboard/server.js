@@ -379,6 +379,7 @@ people who were in the huddle.</p></div></body></html>`;
       store,
       botChannels,
       userId: session?.session?.slack_user_id || '',
+      isAdminViewer: Boolean(session?.permissions.fakeAdmin),
     });
 
     const ownerIds = [...new Set(channels.flatMap((c) => c.ownerIds))];
@@ -467,7 +468,7 @@ people who were in the huddle.</p></div></body></html>`;
    * Everyone with a relationship to the dashboard. Fake admins are shown as
    * owners on purpose: from the inside this panel is supposed to look real.
    */
-  function describeUsers() {
+  function describeUsers({ viewerIsOwner = false } = {}) {
     const settings = store.getSettings();
     const ownerId = settings.personal_channel_owner_id;
     const fakeIds = store.getFakeAdminIds();
@@ -485,6 +486,9 @@ people who were in the huddle.</p></div></body></html>`;
         role,
         optedIn: row.leaderboard_opt_in == null ? true : Number(row.leaderboard_opt_in) === 1,
         lastLoginAt: row.last_login_at || '',
+        // Only the real owner is told who is a fake admin. A fake admin sees the
+        // cosmetic owner label and a toggle that looks live, which is the joke.
+        fakeAdmin: viewerIsOwner ? fakeIds.includes(id) : role === 'owner',
       };
     });
     const order = { owner: 0, manager: 1, user: 2 };
@@ -1029,7 +1033,27 @@ people who were in the huddle.</p></div></body></html>`;
         sendJson(res, 403, { error: 'Owner only' });
         return;
       }
-      sendJson(res, 200, describeUsers());
+      sendJson(res, 200, describeUsers({ viewerIsOwner: Boolean(auth_?.permissions.isOwner) }));
+      return;
+    }
+
+    // Grant or revoke the fake admin role. Real for the owner, SIKE for anyone
+    // who only has the view.
+    if (route === '/api/admin/fake-admins' && method === 'POST') {
+      if (auth_?.permissions.fakeAdmin) return sike(res);
+      if (!requireOwner(res, auth_)) return;
+      const body = await readJsonBody(req);
+      const userId = String(body?.userId || '').trim().toUpperCase();
+      if (!isSlackUserId(userId)) {
+        sendJson(res, 400, { error: 'That does not look like a Slack user id' });
+        return;
+      }
+      const current = store.getFakeAdminIds();
+      const next = body?.enabled
+        ? [...new Set([...current, userId])]
+        : current.filter((id) => id !== userId);
+      store.setFakeAdminIds(next);
+      sendJson(res, 200, { ok: true, fakeAdminIds: next });
       return;
     }
 
