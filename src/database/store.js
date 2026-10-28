@@ -2399,6 +2399,17 @@ export async function createStore(databasePath, options = {}) {
       persist();
     },
 
+    /** Is this person's attendance interval still open? */
+    hasOpenHuddleAttendance(callId, userId) {
+      return Boolean(
+        bindAndFetchOne(
+          database,
+          'SELECT 1 AS open FROM huddle_attendance WHERE call_id = $call_id AND user_id = $user_id AND left_at IS NULL LIMIT 1',
+          { $call_id: String(callId || ''), $user_id: String(userId || '') },
+        ),
+      );
+    },
+
     /** Flip one member's in-call flag without touching their times. */
     setHuddleMemberPresence(callId, userId, isIn) {
       bindAndRun(database, 'UPDATE huddle_members SET is_in = $is_in WHERE call_id = $call_id AND user_id = $user_id', {

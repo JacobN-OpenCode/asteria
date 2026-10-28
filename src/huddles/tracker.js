@@ -497,6 +497,15 @@ export function createHuddleTracker({ app, store, client, logger, ownerId = '', 
       store.setUserHuddleState({ userId, callId, isIn: true });
       return;
     }
+    // Slack re-sends `in_a_huddle` for the same call on every presence change
+    // (mute, camera, screenshare). The state refresh is still useful, but it is
+    // not a new join, so it must not add another log row.
+    const prior = store.getUserHuddleState(userId);
+    // An open interval is what makes this a repeat. A member row is not enough:
+    // the roster merge creates one from participant_history, and the promotion
+    // replay still has to record the join and open the interval.
+    const alreadyIn =
+      Number(prior.is_in) === 1 && prior.call_id === callId && store.hasOpenHuddleAttendance(callId, userId);
     store.setUserHuddleState({ userId, callId, isIn: true });
     // Intervals are the real attendance record. The roster row below is only
     // kept for liveness, because a single first/last pair cannot express a gap.
@@ -508,12 +517,14 @@ export function createHuddleTracker({ app, store, client, logger, ownerId = '', 
       lastSeenAt: joinedAt,
       isIn: true,
     });
-    store.recordTriggerLog({
-      userId,
-      action: 'huddle_join',
-      detail: callId,
-      channelId: store.getHuddle(callId)?.channel_id || '',
-    });
+    if (!alreadyIn) {
+      store.recordTriggerLog({
+        userId,
+        action: 'huddle_join',
+        detail: callId,
+        channelId: store.getHuddle(callId)?.channel_id || '',
+      });
+    }
   }
 
   async function applyLeave(userId, callId) {
