@@ -86,6 +86,18 @@ export async function createAsteriaRuntime() {
     logger.error(`Could not repair placeholder huddle durations: ${error?.message || error}`);
   }
 
+  // Closed huddles with no channel are unreadable everywhere: no page, no score,
+  // no review. They accumulated before channel attribution existed, so clear
+  // them out on boot. A second run finds nothing.
+  try {
+    const purged = store.purgeOrphanHuddles();
+    if (purged > 0) {
+      logger.info(`Removed ${purged} closed huddle(s) that were never in a channel`);
+    }
+  } catch (error) {
+    logger.error(`Could not clear channel-less huddles: ${error?.message || error}`);
+  }
+
   createHomeHandlers({
     app,
     store,

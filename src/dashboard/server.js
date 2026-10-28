@@ -2,6 +2,7 @@ import http from 'node:http';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { DateTime } from 'luxon';
+import { createPermissions, isSlackUserId, parseOwnerIds } from '../permissions.js';
 import { buildStatusRss, readStatusEvents } from '../status/status-core.js';
 import { createDashboardAuth } from './auth.js';
 import { createCachetDirectory } from './cachet.js';
@@ -64,6 +65,10 @@ export function createDashboardServer({
     slackClientId: process.env.SLACK_CLIENT_ID || '',
     slackClientSecret: process.env.SLACK_CLIENT_SECRET || '',
   });
+  // One set of permission rules, shared with App Home. Reading a channel's
+  // settings is a per channel question, so it is asked here rather than trusted
+  // from whatever list happened to be in the session cookie.
+  const permissions = createPermissions({ store });
 
   function readSession(req) {
     const cookies = parseCookies(req.headers.cookie || '');
@@ -118,11 +123,7 @@ export function createDashboardServer({
     if (!session) {
       return false;
     }
-    const { isOwner, managedChannelIds } = session.permissions;
-    if (isOwner) {
-      return true;
-    }
-    return Array.isArray(managedChannelIds) && managedChannelIds.includes(channelId);
+    return permissions.mayConfigureChannel(session.session.slack_user_id, channelId);
   }
 
   function requireManager(res, session) {
@@ -132,6 +133,21 @@ export function createDashboardServer({
     }
     if (!session.permissions.isManager) {
       sendJson(res, 403, { error: 'You do not manage any channels' });
+      return false;
+    }
+    return true;
+  }
+
+  // Global settings belong to the owner alone. A channel manager runs a
+  // channel; they do not get to change the daily question, the timezone, or
+  // who the owner is.
+  function requireOwner(res, session) {
+    if (!session) {
+      sendJson(res, 401, { error: 'Sign in first' });
+      return false;
+    }
+    if (!session.permissions.isOwner) {
+      sendJson(res, 403, { error: 'Owner only' });
       return false;
     }
     return true;
@@ -279,37 +295,30 @@ people who were in the huddle.</p></div></body></html>`;
     };
   }
 
-  function parseOwnerIds(raw) {
-    if (Array.isArray(raw)) {
-      return raw;
-    }
-    if (typeof raw !== 'string' || raw.trim() === '') {
-      return [];
-    }
-    try {
-      const parsed = JSON.parse(raw);
-      return Array.isArray(parsed) ? parsed : [];
-    } catch {
-      return [];
-    }
-  }
-
   /**
-   * Per channel settings for the huddle customisation tab, plus any channel the
-   * bot is in but has no settings row for. Those still get tracked and still
-   * announce, because an unconfigured channel falls back to the defaults, so
-   * saying so out loud is the only way it is visible.
+   * Per channel settings for the huddle customisation tab.
+   *
+   * A manager sees only the channels they run. The owner sees every configured
+   * channel plus every channel the bot is in but has no settings row for, so a
+   * new channel can be adopted instead of silently never appearing.
    */
-  async function describeHuddleConfig() {
+  async function describeHuddleConfig(session) {
     const inBot = await botChannels.list();
     const inBotSet = new Set(inBot);
-    const configured = store.listHuddleChannels();
-    const configuredIds = new Set(configured.map((c) => c.channel_id));
-    const now = nowEpochSeconds();
-    const names = await botChannels.names([...inBotSet]);
+    const configured = store.listHuddleChannels().filter((c) => inBotSet.has(c.channel_id));
+    const isOwner = Boolean(session?.permissions.isOwner);
+    const managed = Array.isArray(session?.permissions.managedChannelIds)
+      ? new Set(session.permissions.managedChannelIds)
+      : null;
 
-    const channels = configured
-      .filter((c) => inBotSet.has(c.channel_id))
+    const visible = isOwner ? configured : configured.filter((c) => managed?.has(c.channel_id));
+    const names = await botChannels.names([...inBotSet]);
+    const now = nowEpochSeconds();
+
+    const ownerIds = [...new Set(visible.flatMap((c) => parseOwnerIds(c.owner_ids)))];
+    const profiles = ownerIds.length ? await cachet.list(ownerIds).catch(() => ({})) : {};
+
+    const channels = visible
       .map((c) => {
         const pausedUntil = Number(c.paused_until) || 0;
         const owners = parseOwnerIds(c.owner_ids);
@@ -323,16 +332,26 @@ people who were in the huddle.</p></div></body></html>`;
           paused: pausedUntil > now,
           pausedUntilLabel:
             pausedUntil > now ? new Date(pausedUntil * 1000).toISOString().slice(0, 16).replace('T', ' ') : 'never',
-          owners: owners.map((id) => ({ id, name: '' })),
+          owners: owners.map((id) => ({ id, name: profiles[id]?.displayName || profiles[id]?.realName || '' })),
         };
       })
       .sort((a, b) => a.name.localeCompare(b.name));
 
+    // Channels the bot is in that have no settings row. They still track with the
+    // defaults, so the dashboard says so, but only the owner may adopt them.
+    const configuredIds = new Set(store.listHuddleChannels().map((c) => c.channel_id));
+    const available = isOwner
+      ? inBot
+          .filter((id) => !configuredIds.has(id))
+          .map((id) => ({ channelId: id, name: names[id] || '' }))
+          .sort((a, b) => a.name.localeCompare(b.name))
+      : [];
+
     return {
       channels,
-      unconfigured: inBot
-        .filter((id) => !configuredIds.has(id))
-        .map((id) => ({ channelId: id, name: names[id] || '' })),
+      available,
+      // Kept so an older open tab keeps working through a deploy.
+      unconfigured: available,
     };
   }
 
@@ -707,14 +726,16 @@ people who were in the huddle.</p></div></body></html>`;
     }
 
     // The tabbed pages. All three are signed-in only: they are settings, not a
-    // public readout, and the admin one additionally has to be the owner.
+    // public readout. The admin panel and the j-log manager are owner only; the
+    // huddle tab belongs to whoever manages at least one channel.
     if (PAGES[route] && method === 'GET') {
       if (!auth_) {
         redirect(res, '/login');
         return;
       }
-      const needsOwner = route === '/admin';
-      if (needsOwner && !auth_.permissions.isOwner) {
+      const needsOwner = route === '/admin' || route === '/j-log';
+      const needsManager = route === '/huddles';
+      if ((needsOwner && !auth_.permissions.isOwner) || (needsManager && !auth_.permissions.isManager)) {
         sendHtml(
           res,
           403,
@@ -743,7 +764,7 @@ people who were in the huddle.</p></div></body></html>`;
     }
 
     if (route === '/api/j-log' && method === 'GET') {
-      if (!requireManager(res, auth_)) return;
+      if (!requireOwner(res, auth_)) return;
       sendJson(res, 200, {
         settings: store.getSettings(),
         draft: store.getDraft() || null,
@@ -753,7 +774,7 @@ people who were in the huddle.</p></div></body></html>`;
     }
 
     if (route === '/api/j-log/draft' && method === 'POST') {
-      if (!requireManager(res, auth_)) return;
+      if (!requireOwner(res, auth_)) return;
       const body = await readJsonBody(req, 16384);
       if (body?.clear) {
         store.clearDraft();
@@ -770,16 +791,36 @@ people who were in the huddle.</p></div></body></html>`;
     }
 
     if (route === '/api/j-log/settings' && method === 'POST') {
-      if (!requireManager(res, auth_)) return;
+      if (!requireOwner(res, auth_)) return;
       const body = await readJsonBody(req);
-      const merged = store.updateSettings(body || {});
+      // The App Home and the dashboard share one settings row. Only the fields
+      // this page actually edits may be written, so a stray key cannot reach
+      // personal_channel_owner_id and hand the caller the whole bot.
+      const patch = {};
+      for (const key of [
+        'daily_question_enabled',
+        'daily_question_include_in_daily_update',
+        'daily_question_prompt',
+        'daily_question_send_time',
+        'daily_question_reply_text',
+        'daily_update_thread_enabled',
+        'daily_update_reminder_enabled',
+        'daily_update_reminder_time',
+        'timezone',
+        'bot_display_name',
+      ]) {
+        if (key in (body || {})) {
+          patch[key] = body[key];
+        }
+      }
+      const merged = store.updateSettings(patch);
       sendJson(res, 200, { ok: true, settings: merged });
       return;
     }
 
     if (route === '/api/huddles/config' && method === 'GET') {
       if (!requireManager(res, auth_)) return;
-      sendJson(res, 200, await describeHuddleConfig());
+      sendJson(res, 200, await describeHuddleConfig(auth_));
       return;
     }
 
@@ -791,8 +832,12 @@ people who were in the huddle.</p></div></body></html>`;
         sendJson(res, 403, { error: 'Not your channel' });
         return;
       }
-      // A channel with no row yet has to exist before its flags can be set.
-      store.upsertHuddleChannel({ channelId });
+      // A channel with no row has to exist before its flags can be set, but this
+      // used to call upsertHuddleChannel with only an id, which writes the whole
+      // row. Every toggle therefore reset the name, the owner list and every
+      // other flag to its default, which is how a manager turned one switch on
+      // and lost their own channel. Create the row only when it is missing.
+      store.ensureHuddleChannel(channelId);
       const allowed = ['enabled', 'auto_replies', 'restrict_triggers', 'condensed_review'];
       for (const field of allowed) {
         if (field in (body || {})) {
@@ -815,14 +860,14 @@ people who were in the huddle.</p></div></body></html>`;
         return;
       }
       const row = store.getHuddleChannel(channelId);
-      const current = [...(parseOwnerIds(row?.owner_ids) || [])];
+      const current = [...parseOwnerIds(row?.owner_ids)];
       const add = String(body?.add || '')
         .trim()
         .toUpperCase();
       const remove = String(body?.remove || '')
         .trim()
         .toUpperCase();
-      if (add && !/^[UW][A-Z0-9]{7,}$/.test(add)) {
+      if (add && !isSlackUserId(add)) {
         sendJson(res, 400, { error: 'That does not look like a Slack user id' });
         return;
       }

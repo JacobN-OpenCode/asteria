@@ -175,4 +175,32 @@ describe('Asteria store', () => {
     assert.equal(store.claimScheduledJob('daily-reminder', '2026-08-04'), false);
     store.close();
   });
+
+  it('clears closed huddles that were never in a channel', async () => {
+    const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'asteria-store-'));
+    const databasePath = path.join(tempDir, 'asteria.sqlite');
+    createdPaths.push(databasePath);
+
+    const store = await createStore(databasePath);
+    const now = Math.floor(Date.now() / 1000);
+    store.upsertHuddle({ callId: 'Rgone', startedAt: now - 600, endedAt: now - 60 });
+    store.setHuddleStatus('Rgone', 'ended', now - 60);
+    store.upsertHuddleMember({
+      callId: 'Rgone',
+      userId: 'U1',
+      firstSeenAt: now - 600,
+      lastSeenAt: now - 60,
+      isIn: false,
+    });
+    store.upsertHuddle({ callId: 'Rkept', startedAt: now - 600, channelId: 'C1', threadRootTs: '1.1' });
+    store.upsertHuddle({ callId: 'Rlive', startedAt: now - 60 });
+
+    assert.equal(store.purgeOrphanHuddles(), 1, 'only the closed, channel-less huddle goes');
+    assert.equal(store.getHuddle('Rgone'), null);
+    assert.equal(store.listHuddleMembers('Rgone').length, 0, 'its members go with it');
+    assert(store.getHuddle('Rkept'), 'a huddle with a channel is kept');
+    assert(store.getHuddle('Rlive'), 'a placeholder the reconciler may still promote is kept');
+    assert.equal(store.purgeOrphanHuddles(), 0, 'a second run is a no-op');
+    store.close();
+  });
 });

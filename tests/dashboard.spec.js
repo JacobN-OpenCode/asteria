@@ -545,6 +545,42 @@ describe('dashboard stats', () => {
     store.close();
   });
 
+  it('gives a signed in viewer a card for every channel the bot is in', async () => {
+    const store = await createTestStore();
+    store.upsertHuddleChannel({ channelId: 'Cknown', name: 'known' });
+    const botChannels = {
+      list: async () => ['Cknown', 'Cwaveland'],
+      names: async (ids) => Object.fromEntries((ids || []).map((id) => [id, id === 'Cwaveland' ? 'waveland' : ''])),
+    };
+
+    // Signed in: a channel the bot was just invited to is on the page as an empty
+    // card, instead of being invisible until somebody huddles there.
+    const signedIn = await buildDashboardStats({
+      store,
+      botChannels,
+      permissions: { role: ROLES.USER, isOwner: false, isManager: false, managedChannelIds: [] },
+      cachet: null,
+      startedAt: Date.now(),
+      statusEvents: [],
+    });
+    assert(
+      signedIn.channels.some((c) => c.id === 'Cwaveland'),
+      'every channel the bot is in has a card',
+    );
+
+    // Anonymous: the public page does not publish channels it has no history for.
+    const anonymous = await buildDashboardStats({
+      store,
+      botChannels,
+      permissions: { role: null, isOwner: false, isManager: false, managedChannelIds: [] },
+      cachet: null,
+      startedAt: Date.now(),
+      statusEvents: [],
+    });
+    assert(!anonymous.channels.some((c) => c.id === 'Cwaveland'), 'no extra channels for the public page');
+    store.close();
+  });
+
   it('re-attributes pre-attribution huddles so a scoped board is not empty', async () => {
     const store = await createTestStore();
     // A huddle that ended before huddle_channel_points existed: it has a lifetime

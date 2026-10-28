@@ -42,7 +42,7 @@ export function renderDashboardHtml({
   </div>
 </header>
 
-${renderTabs(view)}
+${renderTabs(view, { isOwner: role === 'owner', isManager: role === 'manager' })}
 
 <main>
 ${view === 'home' ? homeView() : view === 'j-log' ? jLogView() : view === 'huddles' ? huddlesView() : adminView()}
@@ -170,9 +170,9 @@ function homeView() {
 
 const TABS = [
   { id: 'home', label: 'Dashboard' },
-  { id: 'j-log', label: 'j-log manager' },
-  { id: 'huddles', label: 'Huddle customisation' },
-  { id: 'admin', label: 'Admin panel' },
+  { id: 'j-log', label: 'j-log manager', owner: true },
+  { id: 'huddles', label: 'Huddle customisation', manager: true },
+  { id: 'admin', label: 'Admin panel', owner: true },
 ];
 
 const VIEWS = {
@@ -182,14 +182,29 @@ const VIEWS = {
   admin: { title: 'admin panel' },
 };
 
-function renderTabs(view) {
+/**
+ * Only the tabs the viewer can actually use. Showing every tab to everyone was
+ * a dead end: the page loaded, then every request behind it answered 403.
+ */
+function renderTabs(view, { isOwner = false, isManager = false } = {}) {
+  const tabs = TABS.filter((tab) => {
+    if (tab.owner) {
+      return isOwner;
+    }
+    if (tab.manager) {
+      return isOwner || isManager;
+    }
+    return true;
+  });
   return `<nav class="tabs" aria-label="Sections">
-${TABS.map(
-  (tab) =>
-    `    <a class="tab${tab.id === view ? ' on' : ''}" href="${tab.id === 'home' ? '/' : `/${tab.id}`}"${
-      tab.id === view ? ' aria-current="page"' : ''
-    }>${tab.id === 'home' ? '<span class="dot"></span>' : ''}${tab.label}</a>`,
-).join('\n')}
+${tabs
+  .map(
+    (tab) =>
+      `    <a class="tab${tab.id === view ? ' on' : ''}" href="${tab.id === 'home' ? '/' : `/${tab.id}`}"${
+        tab.id === view ? ' aria-current="page"' : ''
+      }>${tab.id === 'home' ? '<span class="dot"></span>' : ''}${tab.label}</a>`,
+  )
+  .join('\n')}
   </nav>`;
 }
 
@@ -306,6 +321,13 @@ function huddlesView() {
     <div class="cardlist" id="hc-list">
       <div class="cardrow"><span class="skel" style="width:180px"></span></div>
     </div>
+  </section>
+
+  <section class="panel hidden" id="hc-available-panel" style="margin-top:14px">
+    <header class="panel-head"><h2>Channels the bot is in, not tracked yet</h2><span class="tag" id="hc-available-tag">to add</span></header>
+    <p class="sub" style="margin:0 0 12px">These already score huddles with the defaults, but they never show up on the
+      dashboard until they have a settings row. Track one to give it a card here.</p>
+    <div class="cardlist" id="hc-available"></div>
   </section>`;
 }
 
@@ -1209,7 +1231,7 @@ function channelCard(c) {
     '<label class="switch"><input type="checkbox" data-flag="restrict_triggers"' +
     (c.restrict_triggers ? ' checked' : '') +
     '><i></i></label></div>' +
-    '<div class="switchrow"><div><div class="t">Condended recaps</div><div class="d">On, the thread gets the summary and a link, and no review button.</div></div>' +
+    '<div class="switchrow"><div><div class="t">Condensed recaps</div><div class="d">On, the thread gets the summary and a link, and no review button.</div></div>' +
     '<label class="switch"><input type="checkbox" data-flag="condensed_review"' +
     (c.condensed_review ? ' checked' : '') +
     '><i></i></label></div>' +
@@ -1242,23 +1264,36 @@ function channelCard(c) {
   );
 }
 
+function availableChannelRow(c) {
+  return (
+    '<div class="cardrow" data-channel="' +
+    escapeHtml(c.channelId) +
+    '"><div class="hd"><div class="nm"><span>' +
+    escapeHtml(c.name || c.channelId) +
+    '</span></div><span class="id">' +
+    escapeHtml(c.channelId) +
+    '</span></div>' +
+    '<div class="row-actions"><button class="btn" type="button" data-track="' +
+    escapeHtml(c.channelId) +
+    '">Track this channel</button></div></div>'
+  );
+}
+
 function loadHuddles() {
   fetch(base + '/api/huddles/config')
     .then((r) => r.json())
     .then((d) => {
+      const available = d.available || d.unconfigured || [];
       const note = $('unconfigured-note');
-      if (d.unconfigured?.length) {
-        note.hidden = false;
-        setText(
-          'unconfigured-text',
-          'The bot is in ' +
-            d.unconfigured.length +
-            ' channel(s) it has no settings for: ' +
-            d.unconfigured.map((c) => '#' + (c.name || c.channelId)).join(', ') +
-            '. Huddles there are still announced and still score points, but they do not appear on the dashboard.',
-        );
+      const panel = $('hc-available-panel');
+      if (available.length) {
+        note.hidden = true;
+        panel.hidden = false;
+        setText('hc-available-tag', String(available.length));
+        $('hc-available').innerHTML = available.map(availableChannelRow).join('');
       } else {
         note.hidden = true;
+        panel.hidden = true;
       }
       setText('hc-tag', d.channels.length + ' configured');
       $('hc-list').innerHTML = d.channels.length
@@ -1281,6 +1316,16 @@ function wireHuddles() {
     post('/api/huddles/config', { channelId, ...patch })
       .then(() => row.querySelector('[data-saved]').classList.add('on'))
       .catch(() => {});
+  });
+  $('hc-available').addEventListener('click', (event) => {
+    const btn = event.target.closest('button[data-track]');
+    if (!btn) return;
+    btn.disabled = true;
+    post('/api/huddles/config', { channelId: btn.dataset.track, enabled: 1 })
+      .then(() => loadHuddles())
+      .catch(() => {
+        btn.disabled = false;
+      });
   });
   $('hc-list').addEventListener('click', (event) => {
     const btn = event.target.closest('button[data-remove-owner]');

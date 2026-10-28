@@ -1175,6 +1175,31 @@ export async function createStore(databasePath, options = {}) {
       return rows.length;
     },
 
+    /**
+     * Drop closed huddles that never got a channel.
+     *
+     * These are the leftovers from before huddles were attributed to a channel
+     * (late September, 439 of them). With no channel they can never be shown,
+     * scored, reviewed or linked: every reader filters them out. They only make
+     * `listHuddles()` slower and inflate the orphan count on the admin tab, so
+     * the closed ones are removed along with their member and award rows. The
+     * live placeholder version of the same thing is handled by
+     * purgeUnverifiedHuddles.
+     */
+    purgeOrphanHuddles() {
+      const rows = bindAndFetchAll(database, `SELECT call_id FROM huddles WHERE channel_id = '' AND status = 'ended'`);
+      for (const row of rows) {
+        bindAndRun(database, 'DELETE FROM huddle_members WHERE call_id = $call_id', { $call_id: row.call_id });
+        bindAndRun(database, 'DELETE FROM huddle_attendance WHERE call_id = $call_id', { $call_id: row.call_id });
+        bindAndRun(database, 'DELETE FROM huddle_awards WHERE huddle_id = $call_id', { $call_id: row.call_id });
+        bindAndRun(database, 'DELETE FROM huddles WHERE call_id = $call_id', { $call_id: row.call_id });
+      }
+      if (rows.length > 0) {
+        persist();
+      }
+      return rows.length;
+    },
+
     listActiveHuddles() {
       // A channel_id is required, so the reconciler never touches a huddle the
       // bot has not confirmed it is inside.
@@ -1802,6 +1827,27 @@ export async function createStore(databasePath, options = {}) {
           updated_at = CURRENT_TIMESTAMP
       `,
         { $channel_id: channelId, $is_private: value },
+      );
+      persist();
+      return true;
+    },
+
+    /**
+     * Create a settings row with the defaults if the channel has none.
+     *
+     * `upsertHuddleChannel` writes every column, so using it to "make sure a row
+     * exists" reset the name, owner list and toggles of a channel that was
+     * already configured. This only ever inserts.
+     */
+    ensureHuddleChannel(channelId) {
+      const id = String(channelId || '').trim();
+      if (!id) {
+        return false;
+      }
+      bindAndRun(
+        database,
+        'INSERT INTO huddle_channels (channel_id) VALUES ($channel_id) ON CONFLICT(channel_id) DO NOTHING',
+        { $channel_id: id },
       );
       persist();
       return true;
