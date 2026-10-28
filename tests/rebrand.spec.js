@@ -12,7 +12,7 @@ describe('old host notice', () => {
   it('recognises the hosts that used to be the product', () => {
     assert.equal(isLegacyHost('asteria.navaratne.uk'), true);
     assert.equal(isLegacyHost('ASTERIA.navaratne.uk:443'), true);
-    assert.equal(isLegacyHost('asteria.mini-jacob.hackclub.app'), true);
+    assert.equal(isLegacyHost('asteria.mini-jacob.hackclub.app'), false, 'the direct Nest host stays usable');
   });
 
   it('leaves the new host and unknown hosts alone', () => {
