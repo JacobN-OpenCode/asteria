@@ -28,7 +28,32 @@ export async function buildDashboardStats({
   const botChannelSet = new Set(channelIds);
 
   const allHuddles = store.listHuddles().filter((h) => botChannelSet.has(h.channel_id));
-  const channels = store.listTrackedHuddleChannels().filter((c) => botChannelSet.has(c.channel_id));
+  const trackedChannels = store.listTrackedHuddleChannels().filter((c) => botChannelSet.has(c.channel_id));
+  // Every channel the bot is in should have a card, not just the ones that have
+  // already seen a huddle or were configured by hand. Otherwise a channel the bot
+  // was invited to (waveland, say) is invisible until somebody happens to huddle
+  // there, which reads as "the bot is broken". Only signed in viewers get the
+  // extra rows: they are already in the workspace, while the public page should
+  // not publish the existence of channels it has no history for.
+  const trackedChannelIds = new Set(trackedChannels.map((channel) => channel.channel_id));
+  const canSeeEmptyChannels = isOwner || isManager || permissions.role != null;
+  const untrackedChannels = canSeeEmptyChannels
+    ? channelIds
+        .filter((id) => !trackedChannelIds.has(id))
+        .map((id) => ({
+          channel_id: id,
+          name: '',
+          enabled: 1,
+          auto_replies: 1,
+          restrict_triggers: 0,
+          owner_ids: '[]',
+          paused_until: 0,
+          is_private: -1,
+          condensed_review: 0,
+          configured: false,
+        }))
+    : [];
+  const channels = [...trackedChannels, ...untrackedChannels];
   const visibleHuddles =
     isOwner || !isManager ? allHuddles : allHuddles.filter((h) => permissions.managedChannelIds.includes(h.channel_id));
 
@@ -50,7 +75,13 @@ export async function buildDashboardStats({
   // actually in. Passing the bot's whole membership list is what put people from
   // untracked huddles on the board; tracked alone would count channels the bot
   // cannot see, which could not have scored anyway.
-  const scopeChannelIds = channels.map((channel) => channel.channel_id).filter((id) => id && channelIds.includes(id));
+  //
+  // This stays on `trackedChannels` rather than every card above: a card with no
+  // settings row and no huddle history has no attributed points to count, and an
+  // old award row must not sneak in through a channel nobody opted into.
+  const scopeChannelIds = trackedChannels
+    .map((channel) => channel.channel_id)
+    .filter((id) => id && channelIds.includes(id));
   const leaderboardRows = store.listHuddleLeaderboard(25, scopeChannelIds);
   const rawLeaderboard = await withProfiles({
     rows: leaderboardRows.map((row, index) => ({
@@ -121,7 +152,10 @@ export async function buildDashboardStats({
             return;
           }
           channel.is_private = isPrivate;
-          if (typeof store.setHuddleChannelPrivacy === 'function') {
+          // Only remember the answer for a channel that already has a settings
+          // row. Writing one here would quietly turn every channel the bot is in
+          // into a "tracked" channel just because somebody loaded the page.
+          if (channel.configured !== false && typeof store.setHuddleChannelPrivacy === 'function') {
             store.setHuddleChannelPrivacy(channel.channel_id, isPrivate);
           }
         }),
@@ -136,7 +170,9 @@ export async function buildDashboardStats({
       if (match) {
         match.name = name;
       }
-      store.setHuddleChannelName?.(channelId, name);
+      if (match?.configured !== false) {
+        store.setHuddleChannelName?.(channelId, name);
+      }
     }
   }
 

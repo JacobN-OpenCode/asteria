@@ -173,4 +173,94 @@ describe('tabbed pages', () => {
     const res = await send('/api/huddles/config', { channelId: 'C0SOMEONEELSE', enabled: 0 }, managerCookie);
     assert.equal(res.status, 403);
   });
+
+  it('shows a manager only the channels they run', async () => {
+    const data = await (await get('/api/huddles/config', managerCookie)).json();
+    assert.deepEqual(
+      data.channels.map((c) => c.channelId),
+      [CHANNEL],
+      'a manager never sees another channel',
+    );
+    assert.deepEqual(data.available, [], 'only the owner may adopt new channels');
+  });
+
+  it('hides the owner tabs and pages from a manager', async () => {
+    const html = await (await get('/huddles', managerCookie)).text();
+    assert(html.includes('Huddle customisation'));
+    assert(!html.includes('j-log manager'), 'no j-log tab');
+    assert(!html.includes('Admin panel'), 'no admin tab');
+
+    for (const route of ['/j-log', '/admin']) {
+      assert.equal((await get(route, managerCookie)).status, 403, `${route} is owner only`);
+    }
+  });
+
+  it('keeps the global settings away from a channel manager', async () => {
+    assert.equal((await get('/api/j-log', managerCookie)).status, 403);
+    assert.equal((await send('/api/j-log/settings', { timezone: 'UTC' }, managerCookie)).status, 403);
+
+    // The old endpoint took the raw body into updateSettings, so any manager
+    // could post personal_channel_owner_id and become the owner.
+    const escalation = await send('/api/j-log/settings', { personal_channel_owner_id: MANAGER }, managerCookie);
+    assert.equal(escalation.status, 403, 'the attempt is refused');
+    assert.equal(store.getSettings().personal_channel_owner_id, OWNER, 'the owner did not change');
+  });
+
+  it('changes one flag without resetting the rest of the channel', async () => {
+    await send(
+      '/api/huddles/config',
+      { channelId: CHANNEL, auto_replies: 0, restrict_triggers: 1, condensed_review: 1 },
+      ownerCookie,
+    );
+    await send('/api/huddles/config', { channelId: CHANNEL, enabled: 0 }, ownerCookie);
+
+    const data = await (await get('/api/huddles/config', ownerCookie)).json();
+    const channel = data.channels.find((c) => c.channelId === CHANNEL);
+    assert.equal(channel.enabled, false, 'the requested flag changed');
+    assert.equal(channel.auto_replies, false, 'an unrelated flag survived');
+    assert.equal(channel.restrict_triggers, true, 'an unrelated flag survived');
+    assert.equal(channel.condensed_review, true, 'an unrelated flag survived');
+    assert(
+      channel.owners.some((o) => o.id === MANAGER),
+      'the owner list survived',
+    );
+  });
+
+  it('adding a manager does not reset the channel', async () => {
+    await send(
+      '/api/huddles/config',
+      { channelId: CHANNEL, enabled: 0, auto_replies: 0, restrict_triggers: 1 },
+      ownerCookie,
+    );
+    await send('/api/huddles/owners', { channelId: CHANNEL, add: 'U0NEWMAN02' }, ownerCookie);
+
+    const data = await (await get('/api/huddles/config', ownerCookie)).json();
+    const channel = data.channels.find((c) => c.channelId === CHANNEL);
+    assert(
+      channel.owners.some((o) => o.id === 'U0NEWMAN02'),
+      'the manager was added',
+    );
+    assert.equal(channel.enabled, false, 'the enabled flag survived');
+    assert.equal(channel.auto_replies, false, 'the replies flag survived');
+    assert.equal(channel.restrict_triggers, true, 'the triggers flag survived');
+  });
+
+  it('lets the owner adopt a channel the bot is already in', async () => {
+    const before = await (await get('/api/huddles/config', ownerCookie)).json();
+    assert(
+      before.available.some((c) => c.channelId === 'C0UNCONFIGURED'),
+      'an untracked channel is offered rather than silently missing',
+    );
+
+    assert.equal(
+      (await send('/api/huddles/config', { channelId: 'C0UNCONFIGURED', enabled: 1 }, ownerCookie)).status,
+      200,
+    );
+    const after = await (await get('/api/huddles/config', ownerCookie)).json();
+    assert(
+      after.channels.some((c) => c.channelId === 'C0UNCONFIGURED'),
+      'it is a channel card now',
+    );
+    assert.deepEqual(after.available, [], 'and it is no longer offered');
+  });
 });
