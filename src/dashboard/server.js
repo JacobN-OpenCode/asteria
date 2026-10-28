@@ -22,6 +22,7 @@ const SESSION_MAX_AGE_SECONDS = 60 * 60 * 24 * 30;
 const PAGES = {
   '/j-log': 'j-log',
   '/huddles': 'huddles',
+  '/recaps': 'recaps',
   '/admin': 'admin',
   '/users': 'users',
   '/messages': 'messages',
