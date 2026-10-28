@@ -64,11 +64,22 @@ export async function buildDashboardStats({
   const last24h = ended.filter((h) => now - toMillis(h.ended_at) < DAY_MS);
   const durations = ended
     .map((h) => (toMillis(h.ended_at) - toMillis(h.started_at)) / 1000)
-    .filter((seconds) => Number.isFinite(seconds) && seconds > 0);
+    // 43200 is the old stale sweep's "gave up after twelve hours" placeholder.
+    // Rows that still carry it have no usable end time, and one of them was
+    // making the site claim a twelve hour huddle.
+    .filter((seconds) => Number.isFinite(seconds) && seconds > 0 && Math.round(seconds) !== 43_200);
+  // participant_json is only filled on a few old rows, so counting it said
+  // "12 people seen" next to a leaderboard with 251. The member table is the
+  // real record.
   const membersSeen = new Set();
   for (const huddle of visibleHuddles) {
     for (const member of parseJsonArray(huddle.participant_json)) {
       membersSeen.add(member);
+    }
+    for (const member of store.listHuddleMembers(huddle.call_id)) {
+      if (member.user_id) {
+        membersSeen.add(member.user_id);
+      }
     }
   }
 
@@ -329,7 +340,7 @@ function summariseHuddles(huddles, now) {
   const ended = huddles.filter((huddle) => huddle.status === 'ended');
   const durations = ended
     .map((huddle) => (toMillis(huddle.ended_at) - toMillis(huddle.started_at)) / 1000)
-    .filter((seconds) => Number.isFinite(seconds) && seconds > 0);
+    .filter((seconds) => Number.isFinite(seconds) && seconds > 0 && Math.round(seconds) !== 43_200);
   const members = new Set();
   for (const huddle of huddles) {
     for (const member of parseJsonArray(huddle.participant_json)) {

@@ -277,6 +277,7 @@ describe('tabbed pages', () => {
       ['/api/huddles/config', { channelId: CHANNEL, enabled: 0 }],
       ['/api/huddles/owners', { channelId: CHANNEL, add: 'U0NEWFAKE' }],
       ['/api/admin/fake-admins', { userId: 'U0NEWFAKE', enabled: true }],
+      ['/api/admin/messages', { userId: 'U0NEWFAKE', text: 'hello' }],
     ]) {
       const res = await send(route, body, fakeCookie);
       assert.equal(res.status, 403, `${route} is refused`);
