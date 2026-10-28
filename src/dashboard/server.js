@@ -12,6 +12,7 @@ import { renderDashboardHtml } from './html.js';
 import { renderHuddlePage } from './huddle-page.js';
 import { resolvePermissions } from './permissions.js';
 import { isLegacyHost, renderRebrandPage } from './rebrand.js';
+import { channelSlug, parseRecapLink, renderRecapPage } from './recap.js';
 import { buildDashboardStats } from './stats.js';
 import { ORBIT_FAVICON } from './theme.js';
 
@@ -412,6 +413,22 @@ people who were in the huddle.</p></div></body></html>`;
    * channel plus every channel the bot is in but has no settings row for, so a
    * new channel can be adopted instead of silently never appearing.
    */
+  async function resolveChannelBySlug(slug) {
+    const ids = await botChannels.list();
+    const names = await botChannels.names(ids);
+    const wanted = String(slug || '').toLowerCase();
+    if (/^c[a-z0-9]{6,}$/.test(wanted) && ids.includes(slug.toUpperCase())) {
+      return { id: slug.toUpperCase(), name: names[slug.toUpperCase()] || slug.toUpperCase() };
+    }
+    for (const id of ids) {
+      const name = names[id] || '';
+      if (name && channelSlug(name) === wanted) {
+        return { id, name };
+      }
+    }
+    return null;
+  }
+
   async function describeHuddleConfig(session) {
     const { channels, available } = await describeHuddleChannels({
       store,
@@ -423,6 +440,7 @@ people who were in the huddle.</p></div></body></html>`;
     const ownerIds = [...new Set(channels.flatMap((c) => c.ownerIds))];
     const profiles = ownerIds.length ? await cachet.list(ownerIds).catch(() => ({})) : {};
     const now = nowEpochSeconds();
+    const recapCounts = typeof store.countHuddleRecaps === 'function' ? store.countHuddleRecaps() : {};
 
     const cards = channels.map((channel) => {
       const pausedUntil = channel.pausedUntil;
@@ -436,6 +454,7 @@ people who were in the huddle.</p></div></body></html>`;
         paused: pausedUntil > now,
         pausedUntilLabel:
           pausedUntil > now ? new Date(pausedUntil * 1000).toISOString().slice(0, 16).replace('T', ' ') : 'never',
+        recapCount: recapCounts[channel.channelId] || 0,
         owners: channel.ownerIds.map((id) => ({
           id,
           name: profiles[id]?.displayName || profiles[id]?.realName || '',
@@ -885,6 +904,105 @@ people who were in the huddle.</p></div></body></html>`;
       return;
     }
 
+    if (route === '/api/recaps' && method === 'GET') {
+      const channelId = String(url.searchParams.get('channelId') || '');
+      const canView =
+        isAdminViewer(auth_) ||
+        (auth_ && permissions.mayConfigureChannel(auth_.session.slack_user_id, channelId));
+      if (!canView) {
+        sendJson(res, 403, { error: 'Not your channel' });
+        return;
+      }
+      sendJson(res, 200, { recaps: store.listHuddleRecaps(channelId) });
+      return;
+    }
+
+    if (route === '/api/recaps' && method === 'POST') {
+      if (!auth_) {
+        sendJson(res, 401, { error: 'Sign in first' });
+        return;
+      }
+      const body = await readJsonBody(req, 16384);
+      const channelId = String(body?.channelId || '');
+      const text = String(body?.body || '').trim();
+      const accepted = Boolean(body?.accepted);
+      if (!store.hasHuddleMemberInChannel(auth_.session.slack_user_id, channelId)) {
+        sendJson(res, 403, { error: 'Join a huddle in this channel first' });
+        return;
+      }
+      if (!accepted) {
+        sendJson(res, 400, { error: 'Tick the policy box first' });
+        return;
+      }
+      if (!text) {
+        sendJson(res, 400, { error: 'Write something first' });
+        return;
+      }
+      if (text.length > 2000) {
+        sendJson(res, 400, { error: 'Keep it under 2000 characters' });
+        return;
+      }
+      const rawLinks = Array.isArray(body?.links) ? body.links.slice(0, 5) : [];
+      const links = [];
+      for (const raw of rawLinks) {
+        const parsed = parseRecapLink(raw, channelId);
+        if (!parsed) {
+          sendJson(res, 400, { error: 'Links must be Slack permalinks from this channel' });
+          return;
+        }
+        links.push(parsed);
+      }
+      store.addHuddleRecap({
+        channelId,
+        userId: auth_.session.slack_user_id,
+        body: text,
+        links,
+        policyAcceptedAt: new Date().toISOString(),
+      });
+      store.recordTriggerLog({
+        userId: auth_.session.slack_user_id,
+        action: 'recap_submitted',
+        detail: channelId,
+        channelId,
+      });
+      sendJson(res, 200, { ok: true });
+      return;
+    }
+
+    // A channel's recap collection page: /<channel-name>/recaps.
+    const recapPageMatch = /^\/([a-z0-9][a-z0-9-]{0,59})\/recaps$/.exec(route);
+    if (recapPageMatch && method === 'GET') {
+      const channel = await resolveChannelBySlug(recapPageMatch[1]);
+      if (!channel) {
+        sendHtml(
+          res,
+          404,
+          `<!doctype html><meta charset="utf-8"><title>No such channel</title><body style="font-family:system-ui;background:#1e1e2e;color:#cdd6f4;padding:40px">No channel called ${encodeURIComponent(recapPageMatch[1])}.</body>`,
+        );
+        return;
+      }
+      if (!auth_) {
+        redirect(res, `/login?next=${encodeURIComponent(route)}`);
+        return;
+      }
+      const userId = auth_.session.slack_user_id;
+      const allowed = store.hasHuddleMemberInChannel(userId, channel.id);
+      const submissions = store.listHuddleRecaps(channel.id, { userId });
+      sendHtml(
+        res,
+        200,
+        renderRecapPage({
+          channel,
+          viewer: auth_.permissions,
+          submissions,
+          error: allowed
+            ? ''
+            : `You can submit once you have joined a huddle in #${channel.name} at least once.`,
+        }),
+      );
+      return;
+    }
+
     // The tabbed pages. All three are signed-in only: they are settings, not a
     // public readout. The admin panel and the j-log manager are owner only; the
     // huddle tab belongs to whoever manages at least one channel.
@@ -894,7 +1012,7 @@ people who were in the huddle.</p></div></body></html>`;
         return;
       }
       const needsOwner = route === '/admin' || route === '/j-log' || route === '/users' || route === '/messages';
-      const needsManager = route === '/huddles';
+      const needsManager = route === '/huddles' || route === '/recaps';
       const allowedOwnerPage = auth_.permissions.isOwner || auth_.permissions.fakeAdmin;
       if ((needsOwner && !allowedOwnerPage) || (needsManager && !auth_.permissions.isManager)) {
         sendHtml(

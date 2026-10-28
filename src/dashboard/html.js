@@ -114,6 +114,7 @@ ${view === 'home' ? homeView() : view === 'j-log' ? jLogView() : view === 'huddl
 if (document.getElementById('about-modal')) {
   if ('${view}' === 'j-log') { loadJLog(); wireJLog(); }
   else if ('${view}' === 'huddles') { loadHuddles(); wireHuddles(); }
+  else if ('${view}' === 'recaps') { loadRecaps(); }
   else if ('${view}' === 'admin') { loadAdmin(); }
   else if ('${view}' === 'users') { loadUsers(); }
   else if ('${view}' === 'messages') { loadMessages(); }
@@ -194,6 +195,7 @@ const TABS = [
   { id: 'home', label: 'Dashboard' },
   { id: 'j-log', label: 'Orbit Channels', owner: true },
   { id: 'huddles', label: 'Orbit Huddles', manager: true },
+  { id: 'recaps', label: 'Orbit Recaps', manager: true },
   { id: 'admin', label: 'Orbit Admin', owner: true },
   { id: 'users', label: 'Orbit Users', owner: true },
   { id: 'messages', label: 'Orbit Messages', owner: true },
@@ -203,6 +205,7 @@ const VIEWS = {
   home: { title: 'live dashboard' },
   'j-log': { title: 'orbit channels' },
   huddles: { title: 'orbit huddles' },
+  recaps: { title: 'orbit recaps' },
   admin: { title: 'orbit admin' },
   users: { title: 'orbit users' },
   messages: { title: 'orbit messages' },
@@ -354,6 +357,28 @@ function huddlesView() {
     <p class="sub" style="margin:0 0 12px">These already score huddles with the defaults, but they never show up on the
       dashboard until they have a settings row. Track one to give it a card here.</p>
     <div class="cardlist" id="hc-available"></div>
+  </section>`;
+}
+
+function recapsView() {
+  return `  <section class="stage">
+  <section class="hero">
+    <p class="kicker">orbit recaps</p>
+    <h1>Collect the <span class="accent">funny bits</span>.</h1>
+    <p class="sub">Open a channel's recap page and share the link. People who have been in a huddle there can
+      submit moments and link their own messages, after agreeing to the recording policy. Everything lands here
+      for you to read.</p>
+  </section>
+  </section>
+
+  <section class="panel">
+    <header class="panel-head"><h2>Channels</h2><span class="tag" id="recap-tag"><span class="skel skel-sm"></span></span></header>
+    <div class="cardlist" id="recap-list"><div class="cardrow"><span class="skel" style="width:220px"></span></div></div>
+  </section>
+
+  <section class="panel hidden" id="recap-view-panel">
+    <header class="panel-head"><h2 id="recap-view-title">Submissions</h2><span class="tag">admin view</span></header>
+    <div class="cardlist" id="recap-view"></div>
   </section>`;
 }
 
@@ -1534,6 +1559,64 @@ function wireHuddles() {
       .then(() => loadHuddles())
       .catch(() => {});
   });
+}
+
+function slugifyChannel(name) {
+  return String(name || '').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 60);
+}
+
+function loadRecaps() {
+  fetch(base + '/api/huddles/config')
+    .then((r) => r.json())
+    .then((d) => {
+      const channels = d.channels || [];
+      setText('recap-tag', channels.length + ' channels');
+      $('recap-list').innerHTML = channels.length
+        ? channels.map((channel) => {
+            const slug = slugifyChannel(channel.name || channel.channelId);
+            return '<div class="cardrow" data-channel="' + escapeHtml(channel.channelId) + '">' +
+              '<div class="hd"><div class="nm"><span>' + escapeHtml(channel.name || channel.channelId) + '</span>' +
+                '<span class="tag">' + (channel.recapCount || 0) + ' recaps</span></div>' +
+                '<span class="id">' + escapeHtml(slug) + '</span></div>' +
+              '<div class="row-actions">' +
+                '<a class="btn ghost" href="/' + encodeURIComponent(slug) + '/recaps" target="_blank" rel="noopener">Open page</a>' +
+                '<button class="btn ghost" type="button" data-recap-view="' + escapeHtml(channel.channelId) + '" data-name="' +
+                  escapeHtml(channel.name || channel.channelId) + '">View submissions</button>' +
+              '</div></div>';
+          }).join('')
+        : '<div class="emptynote">No channels yet.</div>';
+      $('recap-list').onclick = (event) => {
+        const btn = event.target.closest('button[data-recap-view]');
+        if (!btn) return;
+        const channelId = btn.dataset.recapView;
+        setText('recap-view-title', 'Submissions · ' + btn.dataset.name);
+        $('recap-view-panel').classList.remove('hidden');
+        $('recap-view').innerHTML = '<div class="cardrow"><span class="skel" style="width:200px"></span></div>';
+        fetch(base + '/api/recaps?channelId=' + encodeURIComponent(channelId))
+          .then((r) => r.json())
+          .then((data) => {
+            const recaps = data.recaps || [];
+            $('recap-view').innerHTML = recaps.length
+              ? recaps.map((entry) =>
+                  '<div class="cardrow"><div class="hd"><div class="nm"><span>' + escapeHtml(entry.body) + '</span></div>' +
+                    '<span class="id">' + escapeHtml(entry.user_id) + '</span></div>' +
+                    ((entry.links || []).length
+                      ? '<div class="cm-sub">' + entry.links.map((link) =>
+                          '<a href="' + encodeURI(link) + '" target="_blank" rel="noopener">' + escapeHtml(link) + '</a>',
+                        ).join('<br>') + '</div>'
+                      : '') +
+                    '<div class="cm-sub">' + escapeHtml(String(entry.created_at || '').slice(0, 16)) + '</div></div>',
+                ).join('')
+              : '<div class="emptynote">No submissions yet.</div>';
+          })
+          .catch(() => {
+            $('recap-view').innerHTML = '<div class="emptynote">Could not load submissions.</div>';
+          });
+      };
+    })
+    .catch(() => {
+      $('recap-list').innerHTML = '<div class="emptynote">Could not load channels.</div>';
+    });
 }
 
 function loadMessages() {
