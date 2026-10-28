@@ -247,27 +247,20 @@ describe('dashboard server', () => {
       const owner = await signIn(harness);
       const user = await signIn(harness, { slackUserId: 'U0PLAIN01' });
 
-      // Anonymous is anyone with the URL, so the board is numbers only. The
-      // points still have to be right; the names are what must not ship.
+      // The board is public now: every row is named, subject to opt-out.
       const anonymous = await (await fetch(`${harness.base}/api/stats`)).json();
       assert.deepEqual(
-        anonymous.leaderboard.map((row) => row.userId),
-        ['', ''],
-        'an anonymous viewer gets no Slack ids on the leaderboard',
+        anonymous.leaderboard.map((row) => row.userId).sort(),
+        ['U0AEYDUCLKF', 'U0PLAIN01'],
+        'anonymous viewers see who scored',
       );
-      assert.deepEqual(
-        anonymous.leaderboard.map((row) => row.displayName),
-        ['', ''],
-        'a placeholder name would be as identifying as the real one',
+      assert(
+        anonymous.leaderboard.every((row) => row.displayName && row.displayName.length),
+        'with a name on each row',
       );
-      assert.deepEqual(
-        anonymous.leaderboard.map((row) => row.key),
-        ['anon-1', 'anon-2'],
-        'each row still gets a unique key, or the board collapses to one node on the next poll',
-      );
-      assert.ok(
-        anonymous.leaderboard.every((row) => row.anonymised),
-        'and the client can tell an anonymised row from a real one',
+      assert(
+        anonymous.leaderboard.every((row) => row.key === row.userId),
+        'and a stable row key',
       );
       assert.deepEqual(
         anonymous.leaderboard.map((row) => row.points),

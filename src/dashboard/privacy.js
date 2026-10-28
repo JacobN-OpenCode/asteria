@@ -1,22 +1,17 @@
 /**
- * Decides whether a channel's huddle detail may be shown on a surface that
- * anyone can load.
+ * Who may see what on a surface anyone can load.
  *
- * The rule the product actually agreed on is narrow: a public surface may show
- * a channel's Flaron metadata and its aggregate time and points, and nothing
- * that identifies a person. A name, a face, or a per-person row is the thing
- * that turns "this channel has huddles" into "these people were in it".
+ * The rule is about the channel, not the person:
  *
- * `huddle_channels.is_private` is the stored answer and is deliberately
- * tri-state, because a channel we have never asked Slack about must not be
- * assumed public:
+ *  - public channel   name, stats and managers are public. Everything here is
+ *                     already visible to the whole workspace anyway.
+ *  - private channel  the name is public (it is part of the workspace's channel
+ *                     list), but the stats and the people are not. They open up
+ *                     for the bot owner, the channel's managers, and anyone
+ *                     signed in who is actually a member of that channel.
  *
- *   0  public
- *   1  private
- *  -1  never checked, or the check failed
- *
- * Anything other than 0 is treated as private. That is the whole point of the
- * -1 default: an unanswered lookup hides detail rather than publishing it.
+ * Huddle pages are separate: they are owner-or-participant only and are not
+ * covered here.
  */
 
 /**
@@ -31,55 +26,37 @@ export function isChannelPublic(isPrivate) {
 }
 
 /**
- * Whether an anonymous viewer may see a channel at all.
- *
- * Private and unchecked channels stay visible as a card, because hiding them
- * would make the dashboard lie about how much huddling is happening. What they
- * do not get is the name or anything per-person.
+ * The label for a channel. Always the name, because the name of a private
+ * channel is not the secret: its huddles and members are. Falls back to the id
+ * when Slack never gave us a name.
  */
-export function channelIsVisible() {
-  return true;
-}
-
-/**
- * The label to show a channel that a given viewer is allowed to identify.
- *
- * Unidentified channels fall back to the raw id rather than a Slack link,
- * which would render as "#unknown" in some contexts.
- */
-export function channelLabel({ name, channelId, isPrivate, canIdentify }) {
-  if (!canIdentify || !isChannelPublic(isPrivate)) {
-    return channelId;
-  }
+export function channelLabel({ name, channelId }) {
   return name || channelId;
 }
 
 /**
- * Per-person data is the sharp edge, so it is gated on its own rather than
- * riding along with the channel being visible.
+ * May this viewer see the stats and managers for this channel?
  *
- * Only a public channel on a surface whose viewer is trusted gets names. That
- * covers the owner and a channel manager looking at their own channel, and
- * excludes the anonymous dashboard, which is served to anyone with the URL.
+ * `memberOfChannel` is the answer to "is this signed in person in that private
+ * channel", looked up from Slack by the caller. It is ignored for public
+ * channels.
  */
-export function canShowPeople({ isPrivate, isOwner, isManager, permissions, channelId }) {
-  if (!isChannelPublic(isPrivate)) {
-    return false;
+export function canSeeChannelDetail({
+  isPrivate,
+  isOwner = false,
+  isManager = false,
+  permissions = null,
+  channelId = '',
+  memberOfChannel = false,
+}) {
+  if (!isPrivate) {
+    return true;
   }
   if (isOwner) {
     return true;
   }
-  return Boolean(
-    isManager && Array.isArray(permissions?.managedChannelIds) && permissions.managedChannelIds.includes(channelId),
-  );
-}
-
-/**
- * Reduce a leaderboard row to what a public surface may show.
- *
- * Public surfaces get the number and nothing else, so a person cannot be
- * re-identified by joining their points to a name elsewhere on the page.
- */
-export function anonymiseRow(row) {
-  return { userId: '', displayName: 'Someone', realName: '', pronouns: '', imageUrl: '', points: row.points ?? 0 };
+  if (isManager && Array.isArray(permissions?.managedChannelIds) && permissions.managedChannelIds.includes(channelId)) {
+    return true;
+  }
+  return Boolean(memberOfChannel);
 }

@@ -47,9 +47,28 @@ h1{font-size:24px;letter-spacing:-.01em;margin:0 0 4px}
 .kicker{margin:0 0 8px;font-size:9.5px;letter-spacing:.22em;text-transform:uppercase;color:var(--accent);font-weight:700}
 .bar{height:4px;border-radius:3px;background:var(--line);margin-top:7px;overflow:hidden;max-width:260px}
 .bar i{display:block;height:100%;border-radius:3px;background:linear-gradient(90deg,var(--accent),var(--accent-bright))}
-.facts{grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:12px;margin:26px 0 30px}
-.fact{padding:15px 16px;border-radius:14px}
-.fact dd{font-size:23px;letter-spacing:-.02em}
+.stage{position:relative;overflow:hidden;margin:0 0 28px;padding:26px 26px 22px;border-radius:24px;
+  background:
+    radial-gradient(680px 300px at 90% -50%,var(--tint-2),transparent 70%),
+    linear-gradient(165deg,var(--stage-top),var(--stage-bottom));
+  box-shadow:inset 0 0 0 1px var(--hair),var(--lift)}
+.stage::after{content:"";position:absolute;right:-100px;top:-130px;width:420px;height:420px;pointer-events:none;
+  opacity:.5;transform:rotate(-18deg) scaleY(.5);
+  background:
+    radial-gradient(circle at 50% 50%,transparent 46.6%,var(--ring-strong) 47%,transparent 47.6%),
+    radial-gradient(circle at 50% 50%,transparent 62%,var(--hair-strong) 62.3%,transparent 62.9%)}
+.stage .facts{position:relative;z-index:1;display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));
+  gap:0;margin:24px 0 0;padding-top:20px;border-top:1px solid var(--hair)}
+.stage .fact{background:none;box-shadow:none;border-radius:0;padding:0 18px;border-left:1px solid var(--hair)}
+.stage .fact:first-child{padding-left:0;border-left:0}
+.fact dd{font-size:24px;letter-spacing:-.03em}
+@media (max-width:620px){
+  .stage{padding:20px 18px 18px;border-radius:20px}
+  .stage .facts{grid-template-columns:1fr 1fr;gap:18px 0}
+  .stage .fact:nth-child(odd){padding-left:0;border-left:0}
+}
+table{box-shadow:inset 0 0 0 1px var(--hair)}
+tr.longest{background:var(--tint)}
 h2{font-size:12px;letter-spacing:.13em;text-transform:uppercase;color:var(--ink-3);margin:30px 0 10px;font-weight:600}
 table{width:100%;border-collapse:collapse;background:var(--surface);border-radius:var(--r);overflow:hidden;
   box-shadow:0 0 0 1px var(--line)}
@@ -208,6 +227,7 @@ export function renderHuddlePage(view) {
 </header>
 
 <main>
+  <section class="stage">
   <p class="kicker">orbit · huddle</p>
   <h1>${escapeHtml(channelLabel)}<span class="status ${isLive ? 'live' : 'ended'}"><i></i>${isLive ? 'live now' : 'ended'}</span></h1>
   <p class="sub">Started ${escapeHtml(startedLabel)}${
@@ -245,6 +265,7 @@ ${facts
   )
   .join('\n')}
   </dl>
+  </section>
 
   <h2>Everyone in the huddle</h2>
   ${

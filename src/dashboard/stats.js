@@ -1,5 +1,5 @@
 import { ROLES } from './permissions.js';
-import { canShowPeople, channelLabel } from './privacy.js';
+import { canSeeChannelDetail, channelLabel } from './privacy.js';
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 
@@ -17,6 +17,7 @@ export async function buildDashboardStats({
   slack,
   startedAt,
   statusEvents = [],
+  viewerId = '',
 }) {
   const isOwner = permissions.role === ROLES.OWNER;
   const isManager = permissions.role === ROLES.MANAGER;
@@ -93,38 +94,12 @@ export async function buildDashboardStats({
     store,
   });
 
-  // The dashboard is served to anyone holding the URL, with no sign-in, so a
-  // named leaderboard here publishes who was in which channel's huddles. A
-  // private channel's scores are exactly the thing that must not leak, and the
-  // board mixes channels together, so the only honest public answer is the
-  // number with no name attached.
-  //
-  // Opting out of the board is a separate promise and still applies on top.
-  // A session at all is a real gate: it exists because the viewer signed in
-  // through Slack and proved workspace membership. That is a different promise
-  // from "anyone holding the URL", and it is what keeps the leaderboard useful
-  // for the people who are in the workspace without publishing it to the web.
-  const isSignedIn = permissions.role != null;
-  const showNames = isSignedIn || isOwner || isManager;
-  // Anonymous rows carry no userId on purpose, but the browser keys its board on
-  // one, so each gets a stable per-rank key instead. An empty key would collapse
-  // every row onto a single DOM node on the second poll.
-  const leaderboard = rawLeaderboard.map((row, index) => {
-    if (showNames) {
-      return { ...row, key: row.userId };
-    }
-    return {
-      rank: index + 1,
-      userId: '',
-      key: `anon-${index + 1}`,
-      displayName: '',
-      realName: '',
-      pronouns: '',
-      imageUrl: '',
-      points: row.points,
-      anonymised: true,
-    };
-  });
+  // The board is public. Every row is named, subject to the person's own
+  // leaderboard opt-out, which is applied in withProfiles. Keeping the name off
+  // an anonymous view made the public page useless and was not what the product
+  // wanted: the points are the point, and they are already attributed to a
+  // Slack display name the workspace can see everywhere else.
+  const leaderboard = rawLeaderboard.map((row) => ({ ...row, key: row.userId }));
 
   const logs = isOwner ? store.listTriggerLog(25, channelIds) : [];
 
@@ -223,43 +198,57 @@ export async function buildDashboardStats({
     channels.map(async (channel) => {
       const record = flaronRecords[channel.channel_id] || null;
       const fromSlack = slackSizes.has(channel.channel_id);
+      const isPrivate = Number(channel.is_private) !== 0;
+      const managedByViewer =
+        isOwner ||
+        (isManager && Array.isArray(permissions.managedChannelIds)
+          ? permissions.managedChannelIds.includes(channel.channel_id)
+          : false);
+      // Only a private channel needs a membership lookup, and only for a signed
+      // in person who is neither the owner nor one of its managers. Slack knows
+      // who is in it because the bot is a member itself.
+      let memberOfChannel = false;
+      if (isPrivate && !managedByViewer && viewerId && typeof slack?.isMember === 'function') {
+        memberOfChannel = await slack.isMember(channel.channel_id, viewerId).catch(() => false);
+      }
+      const detailed = canSeeChannelDetail({
+        isPrivate,
+        isOwner,
+        isManager,
+        permissions,
+        channelId: channel.channel_id,
+        memberOfChannel,
+      });
       return {
         id: channel.channel_id,
-        isPrivate: Number(channel.is_private) === 0 ? 0 : Number(channel.is_private) === 1 ? 1 : -1,
-        name: channelLabel({
-          name: channel.name,
-          channelId: channel.channel_id,
-          isPrivate: channel.is_private,
-          canIdentify: isSignedIn,
-        }),
+        isPrivate: isPrivate ? 1 : 0,
+        name: channelLabel({ name: channel.name, channelId: channel.channel_id }),
         inBot: channelIds.includes(channel.channel_id),
-        enabled: !!channel.enabled,
-        autoReplies: !!channel.auto_replies,
-        restrictTriggers: !!channel.restrict_triggers,
-        paused: Number(channel.paused_until) > Math.floor(now / 1000),
-        ownerCount: parseJsonArray(channel.owner_ids).length,
-        managed: isOwner || permissions.managedChannelIds?.includes(channel.channel_id) || false,
-        flaron: {
-          known: !!record,
-          source: record?.members != null ? 'flaron' : fromSlack ? 'slack' : 'none',
-          members: record?.members ?? (fromSlack ? slackSizes.get(channel.channel_id) : null),
-          humans: record?.humans ?? null,
-          bots: record?.bots ?? null,
-        },
-        stats: summariseHuddles(
-          visibleHuddles.filter((huddle) => huddle.channel_id === channel.channel_id),
-          now,
-        ),
-        // Managers are named people. A viewer who is not allowed to see people
-        // in this channel gets a count instead, which still tells the dashboard
-        // how the channel is run without naming anyone.
-        managers: canShowPeople({
-          isPrivate: channel.is_private,
-          isOwner,
-          isManager,
-          permissions,
-          channelId: channel.channel_id,
-        })
+        // A private channel the viewer cannot see into publishes nothing but its
+        // name. Not even whether tracking is on, or how many people manage it.
+        locked: !detailed,
+        enabled: detailed ? !!channel.enabled : null,
+        autoReplies: detailed ? !!channel.auto_replies : null,
+        restrictTriggers: detailed ? !!channel.restrict_triggers : null,
+        paused: detailed ? Number(channel.paused_until) > Math.floor(now / 1000) : null,
+        ownerCount: detailed ? parseJsonArray(channel.owner_ids).length : 0,
+        managed: managedByViewer,
+        flaron: detailed
+          ? {
+              known: !!record,
+              source: record?.members != null ? 'flaron' : fromSlack ? 'slack' : 'none',
+              members: record?.members ?? (fromSlack ? slackSizes.get(channel.channel_id) : null),
+              humans: record?.humans ?? null,
+              bots: record?.bots ?? null,
+            }
+          : { known: false, source: 'none', members: null, humans: null, bots: null },
+        stats: detailed
+          ? summariseHuddles(
+              visibleHuddles.filter((huddle) => huddle.channel_id === channel.channel_id),
+              now,
+            )
+          : null,
+        managers: detailed
           ? parseJsonArray(channel.owner_ids)
               .map((userId) => {
                 const profile = managerProfiles[userId] || {};
@@ -276,7 +265,7 @@ export async function buildDashboardStats({
               })
               .filter((manager) => manager.userId)
           : [],
-        managerCount: parseJsonArray(channel.owner_ids).length,
+        managerCount: detailed ? parseJsonArray(channel.owner_ids).length : 0,
       };
     }),
   );
