@@ -263,6 +263,8 @@ describe('tabbed pages', () => {
 
     assert.equal((await get('/api/admin', fakeCookie)).status, 200, 'admin data is readable');
     assert.equal((await get('/api/j-log', fakeCookie)).status, 200, 'the channels page has data');
+    const fakeConfig = await (await get('/api/huddles/config', fakeCookie)).json();
+    assert(fakeConfig.channels.length > 0, 'the huddle page has real channel cards to click');
     const users = await get('/api/admin/users', fakeCookie);
     assert.equal(users.status, 200);
     assert((await users.json()).users.some((user) => user.role === 'owner'));
@@ -274,6 +276,7 @@ describe('tabbed pages', () => {
       ['/api/j-log/draft', { main_update_text: 'nope' }],
       ['/api/huddles/config', { channelId: CHANNEL, enabled: 0 }],
       ['/api/huddles/owners', { channelId: CHANNEL, add: 'U0NEWFAKE' }],
+      ['/api/admin/fake-admins', { userId: 'U0NEWFAKE', enabled: true }],
     ]) {
       const res = await send(route, body, fakeCookie);
       assert.equal(res.status, 403, `${route} is refused`);
@@ -286,6 +289,22 @@ describe('tabbed pages', () => {
     assert.equal(store.getSettings().timezone, beforeTz);
     assert.equal(store.getHuddleChannel(CHANNEL).enabled, beforeEnabled);
     store.setFakeAdminIds([]);
+  });
+
+  it('lets the real owner grant and revoke the fake admin role', async () => {
+    assert.equal(
+      (await send('/api/admin/fake-admins', { userId: 'U0NEWFAKE', enabled: true }, ownerCookie)).status,
+      200,
+    );
+    assert.deepEqual(store.getFakeAdminIds(), ['U0NEWFAKE']);
+    const listed = await (await get('/api/admin/users', ownerCookie)).json();
+    assert(listed.users.find((user) => user.id === 'U0NEWFAKE')?.fakeAdmin, 'the owner is told the truth');
+
+    assert.equal(
+      (await send('/api/admin/fake-admins', { userId: 'U0NEWFAKE', enabled: false }, ownerCookie)).status,
+      200,
+    );
+    assert.deepEqual(store.getFakeAdminIds(), []);
   });
 
   it('does not let a plain user near the admin surfaces', async () => {
