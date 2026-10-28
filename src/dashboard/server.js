@@ -46,22 +46,42 @@ export function createDashboardServer({
   // app, which looks exactly like a channel with no members.
   const memberCache = new Map();
   const MEMBER_TTL_MS = 5 * 60 * 1000;
+  // /api/stats is polled every few seconds by every open tab, and it used to ask
+  // Slack for the same channel's size and privacy on every single poll. That is
+  // what got us rate limited (retry-after 10s, then a 34s response and a 502 at
+  // the edge). Both answers change slowly, so they are remembered.
+  const infoCache = new Map();
+  // Two tabs open at once used to trigger two identical builds, each asking
+  // Slack the same questions. Share the build that is already running.
+  const statsBuilds = new Map();
+  const INFO_TTL_MS = 10 * 60 * 1000;
+  const cachedInfo = async (channelId, compute) => {
+    const hit = infoCache.get(channelId);
+    if (hit && Date.now() - hit.at < INFO_TTL_MS) {
+      return hit.value;
+    }
+    const value = await compute();
+    infoCache.set(channelId, { at: Date.now(), value });
+    return value;
+  };
   const slack = {
-    channelSize: async (channelId) => {
-      const response = await client.conversations.info({ channel: channelId, include_num_members: true });
-      const total = Number(response?.channel?.num_members);
-      return Number.isFinite(total) ? total : null;
-    },
+    channelSize: async (channelId) =>
+      cachedInfo(`${channelId}:size`, async () => {
+        const response = await client.conversations.info({ channel: channelId, include_num_members: true });
+        const total = Number(response?.channel?.num_members);
+        return Number.isFinite(total) ? total : null;
+      }),
     // Same endpoint, different question. `is_private` is tri-state on the way
     // out for the same reason the column is: an unanswered lookup must not be
     // read as "public".
-    channelPrivacy: async (channelId) => {
-      const response = await client.conversations.info({ channel: channelId });
-      if (!response?.channel || response.channel.is_private == null) {
-        return null;
-      }
-      return response.channel.is_private ? 1 : 0;
-    },
+    channelPrivacy: async (channelId) =>
+      cachedInfo(`${channelId}:privacy`, async () => {
+        const response = await client.conversations.info({ channel: channelId });
+        if (!response?.channel || response.channel.is_private == null) {
+          return null;
+        }
+        return response.channel.is_private ? 1 : 0;
+      }),
     // Is this signed in person actually in that private channel? Only Slack can
     // answer, and it is the whole gate on seeing a private channel's stats.
     // Cached per viewer/channel because /api/stats is polled every few seconds.
@@ -640,17 +660,24 @@ people who were in the huddle.</p></div></body></html>`;
     const auth_ = readSession(req);
 
     if (route === '/api/stats' && method === 'GET') {
-      const stats = await buildDashboardStats({
-        store,
-        botChannels,
-        permissions: auth_?.permissions || { role: null, isOwner: false, isManager: false, managedChannelIds: [] },
-        cachet,
-        flaron,
-        slack,
-        startedAt,
-        statusEvents: readStatusEvents(eventsFilePath),
-        viewerId: auth_?.session.slack_user_id || '',
-      });
+      const viewerKey = `${auth_?.session.slack_user_id || 'anon'}:${auth_?.permissions.role || 'none'}`;
+      let build = statsBuilds.get(viewerKey);
+      if (!build) {
+        build = buildDashboardStats({
+          store,
+          botChannels,
+          permissions: auth_?.permissions || { role: null, isOwner: false, isManager: false, managedChannelIds: [] },
+          cachet,
+          flaron,
+          slack,
+          startedAt,
+          statusEvents: readStatusEvents(eventsFilePath),
+          viewerId: auth_?.session.slack_user_id || '',
+        });
+        statsBuilds.set(viewerKey, build);
+        build.finally(() => statsBuilds.delete(viewerKey)).catch(() => {});
+      }
+      const stats = await build;
       sendJson(res, 200, {
         ...stats,
         viewer: {
