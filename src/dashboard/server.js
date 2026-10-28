@@ -2,6 +2,7 @@ import http from 'node:http';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { DateTime } from 'luxon';
+import { describeHuddleChannels } from '../huddles/channels.js';
 import { createPermissions, isSlackUserId, parseOwnerIds } from '../permissions.js';
 import { buildStatusRss, readStatusEvents } from '../status/status-core.js';
 import { createDashboardAuth } from './auth.js';
@@ -10,7 +11,9 @@ import { createFlaronDirectory } from './flaron.js';
 import { renderDashboardHtml } from './html.js';
 import { renderHuddlePage } from './huddle-page.js';
 import { resolvePermissions } from './permissions.js';
+import { isLegacyHost, renderRebrandPage } from './rebrand.js';
 import { buildDashboardStats } from './stats.js';
+import { ORBIT_FAVICON } from './theme.js';
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
 const SESSION_COOKIE = 'asteria_session';
@@ -195,14 +198,14 @@ export function createDashboardServer({
     return `<!doctype html><html lang="en"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <meta name="robots" content="noindex,nofollow,noarchive">
-<title>Not found · Asteria</title>
-<link rel="icon" href="/favicon.svg" type="image/svg+xml">
+<title>Not found · Jacob's Orbit</title>
+<link rel="icon" href="data:image/svg+xml,${encodeURIComponent(ORBIT_FAVICON)}" type="image/svg+xml">
 <style>body{margin:0;min-height:100vh;display:grid;place-items:center;background:#0d1117;color:#c9d1d9;
 font:15px/1.5 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;text-align:center;padding:24px}
 a{color:#2ea043}h1{color:#f0f6fc;font-size:20px;margin:0 0 8px}p{margin:0;font-size:14px}</style>
 </head><body><div><h1>No such huddle</h1>
 <p>If this is your huddle, <a href="/login">sign in with Slack</a> and try again.</p>
-<p style="margin-top:14px;font-size:13px;color:#8b949e">Huddle pages are only visible to Asteria's owner and to
+<p style="margin-top:14px;font-size:13px;color:#8b949e">Huddle pages are only visible to Orbit's owner and to
 people who were in the huddle.</p></div></body></html>`;
   }
 
@@ -303,52 +306,37 @@ people who were in the huddle.</p></div></body></html>`;
    * new channel can be adopted instead of silently never appearing.
    */
   async function describeHuddleConfig(session) {
-    const inBot = await botChannels.list();
-    const inBotSet = new Set(inBot);
-    const configured = store.listHuddleChannels().filter((c) => inBotSet.has(c.channel_id));
-    const isOwner = Boolean(session?.permissions.isOwner);
-    const managed = Array.isArray(session?.permissions.managedChannelIds)
-      ? new Set(session.permissions.managedChannelIds)
-      : null;
+    const { channels, available } = await describeHuddleChannels({
+      store,
+      botChannels,
+      userId: session?.session?.slack_user_id || '',
+    });
 
-    const visible = isOwner ? configured : configured.filter((c) => managed?.has(c.channel_id));
-    const names = await botChannels.names([...inBotSet]);
+    const ownerIds = [...new Set(channels.flatMap((c) => c.ownerIds))];
+    const profiles = ownerIds.length ? await cachet.list(ownerIds).catch(() => ({})) : {};
     const now = nowEpochSeconds();
 
-    const ownerIds = [...new Set(visible.flatMap((c) => parseOwnerIds(c.owner_ids)))];
-    const profiles = ownerIds.length ? await cachet.list(ownerIds).catch(() => ({})) : {};
-
-    const channels = visible
-      .map((c) => {
-        const pausedUntil = Number(c.paused_until) || 0;
-        const owners = parseOwnerIds(c.owner_ids);
-        return {
-          channelId: c.channel_id,
-          name: c.name || names[c.channel_id] || c.channel_id,
-          enabled: Number(c.enabled) === 1,
-          auto_replies: Number(c.auto_replies) === 1,
-          restrict_triggers: Number(c.restrict_triggers) === 1,
-          condensed_review: Number(c.condensed_review) === 1,
-          paused: pausedUntil > now,
-          pausedUntilLabel:
-            pausedUntil > now ? new Date(pausedUntil * 1000).toISOString().slice(0, 16).replace('T', ' ') : 'never',
-          owners: owners.map((id) => ({ id, name: profiles[id]?.displayName || profiles[id]?.realName || '' })),
-        };
-      })
-      .sort((a, b) => a.name.localeCompare(b.name));
-
-    // Channels the bot is in that have no settings row. They still track with the
-    // defaults, so the dashboard says so, but only the owner may adopt them.
-    const configuredIds = new Set(store.listHuddleChannels().map((c) => c.channel_id));
-    const available = isOwner
-      ? inBot
-          .filter((id) => !configuredIds.has(id))
-          .map((id) => ({ channelId: id, name: names[id] || '' }))
-          .sort((a, b) => a.name.localeCompare(b.name))
-      : [];
+    const cards = channels.map((channel) => {
+      const pausedUntil = channel.pausedUntil;
+      return {
+        channelId: channel.channelId,
+        name: channel.name || channel.channelId,
+        enabled: channel.enabled,
+        auto_replies: channel.autoReplies,
+        restrict_triggers: channel.restrictTriggers,
+        condensed_review: channel.condensed,
+        paused: pausedUntil > now,
+        pausedUntilLabel:
+          pausedUntil > now ? new Date(pausedUntil * 1000).toISOString().slice(0, 16).replace('T', ' ') : 'never',
+        owners: channel.ownerIds.map((id) => ({
+          id,
+          name: profiles[id]?.displayName || profiles[id]?.realName || '',
+        })),
+      };
+    });
 
     return {
-      channels,
+      channels: cards,
       available,
       // Kept so an older open tab keeps working through a deploy.
       unconfigured: available,
@@ -459,6 +447,21 @@ people who were in the huddle.</p></div></body></html>`;
       const events = readStatusEvents(eventsFilePath);
       res.writeHead(200, { 'content-type': 'application/rss+xml; charset=utf-8', 'cache-control': 'no-store' });
       res.end(buildStatusRss({ events, siteUrl: auth.publicUrl(req) }));
+      return;
+    }
+
+    // The old host stops being a product and becomes a notice. Health and RSS
+    // keep working so a monitor never starts paging during the move, auth
+    // callbacks are allowed through so a sign in that started on the old domain
+    // finishes, and the API keeps answering so a tab left open does not break.
+    if (
+      method === 'GET' &&
+      isLegacyHost(req.headers.host) &&
+      !route.startsWith('/auth/') &&
+      !route.startsWith('/api/') &&
+      route !== '/avatar'
+    ) {
+      sendHtml(res, 200, renderRebrandPage({ path: url.pathname, search: url.search }));
       return;
     }
 

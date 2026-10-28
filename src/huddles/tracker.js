@@ -111,7 +111,7 @@ function buildSillyReply(huddle) {
 }
 
 /**
- * Wire Asteria into Slack huddles. Presence comes from the workspace-wide
+ * Wire Orbit into Slack huddles. Presence comes from the workspace-wide
  * `user_huddle_changed` event; room metadata (channel, starter, timestamps,
  * thread) comes from `huddle_thread` messages. When a huddle ends the starter
  * is DMed for an optional huddle review.
@@ -213,11 +213,11 @@ export function createHuddleTracker({ app, store, client, logger, ownerId = '', 
    * the default behaviour: tracking on, auto replies on, anyone can trigger.
    */
   /**
-   * Is this channel one Asteria is actually in?
+   * Is this channel one Orbit is actually in?
    *
    * Hard invariant: a huddle in any other channel does not exist as far as the
    * bot is concerned. It is never stored, never scored, never reviewed, never
-   * linked, never repaired and never shown. Asteria only ever looks at the
+   * linked, never repaired and never shown. Orbit only ever looks at the
    * channels it is a member of.
    *
    * Membership is cached briefly because this sits on the hot path of every
@@ -560,7 +560,7 @@ export function createHuddleTracker({ app, store, client, logger, ownerId = '', 
     }
     const channelId = message.channel || room.channels?.[0] || '';
     // The invariant, enforced at the only point that can know the channel: a
-    // huddle in a channel Asteria is not in is not recorded, scored, reviewed,
+    // huddle in a channel Orbit is not in is not recorded, scored, reviewed,
     // linked, repaired or shown anywhere. It is dropped on the floor.
     if (!(await isBotChannel(channelId))) {
       return;
@@ -1027,7 +1027,11 @@ export function createHuddleTracker({ app, store, client, logger, ownerId = '', 
       return;
     }
     const userId = body?.user?.id || '';
-    const ts = body?.message?.thread_ts || body?.message?.ts;
+    // The message the button is attached to, never `thread_ts`: the prompt is
+    // itself a reply in the huddle thread, so thread_ts names the parent, which
+    // is usually the starter's message. Editing that answered cant_update_message
+    // and left the button doing nothing.
+    const ts = body?.message?.ts;
     const channelId = body?.container?.channel_id ?? body?.channel?.id;
     const huddle = store.getHuddle(callId);
     const rules = channelRules(huddle?.channel_id || channelId || '');

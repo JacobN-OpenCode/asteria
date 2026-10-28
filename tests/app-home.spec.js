@@ -137,7 +137,7 @@ describe('App Home handlers', () => {
     assert(mainCall.text.includes('Today update'));
     const threadCall = client.chat.postMessage.mock.calls[1].arguments[0];
     assert.equal(threadCall.thread_ts, undefined);
-    assert.equal(threadCall.username, 'Asteria');
+    assert.equal(threadCall.username, "Jacob's Orbit");
     assert.equal(store.getDraft().main_update_text, '');
     store.close();
   });
@@ -246,7 +246,7 @@ describe('App Home handlers', () => {
         type: 'rich_text_section',
         elements: [
           { type: 'text', text: 'Shipped ', bold: true },
-          { type: 'text', text: 'Asteria' },
+          { type: 'text', text: "Jacob's Orbit" },
         ],
       },
     ]);
@@ -1036,8 +1036,8 @@ describe('App Home categories and huddle channel controls', () => {
 
     await handlers.publishTab(client, 'UOWNER', 'channels', 'daily-update');
     let labels = buttonLabels(client.views.publish.mock.calls.at(-1).arguments[0].view.blocks);
-    assert(labels.includes('Channel Manager'), 'category tab');
-    assert(labels.includes('Huddles'), 'category tab');
+    assert(labels.includes('Orbit Channel Management'), 'category tab');
+    assert(labels.includes('Orbit Huddles'), 'category tab');
     assert(labels.includes('Daily Update'), 'sub-category tab');
     assert(labels.includes('Daily Question'));
     assert(!labels.includes('Logs'), 'the channels category has no Logs sub-tab');
@@ -1059,8 +1059,8 @@ describe('App Home categories and huddle channel controls', () => {
     const view = client.views.publish.mock.calls.at(-1).arguments[0].view;
     const labels = buttonLabels(view.blocks);
     assert.equal(view.callback_id, 'asteria_home_huddle_channels');
-    assert(labels.includes('Huddles'));
-    assert(!labels.includes('Channel Manager'), 'no channel manager for a non app owner');
+    assert(labels.includes('Orbit Huddles'));
+    assert(!labels.includes('Orbit Channel Management'), 'no channel manager for a non app owner');
     assert(!labels.includes('Logs'), 'logs stay app-owner only');
     store.close();
   });
@@ -1184,7 +1184,9 @@ describe('App Home categories and huddle channel controls', () => {
   });
 
   it('only shows a channel owner the channels they own', async () => {
-    const { store, handlers, client } = await createHarness();
+    const { store, handlers, client } = await createHarness({
+      botChannelIds: ['Cmine', 'Ctheirs', 'Cunconfigured'],
+    });
     store.upsertHuddleChannel({ channelId: 'Cmine', ownerIds: ['UOTHER'] });
     store.upsertHuddleChannel({ channelId: 'Ctheirs', ownerIds: ['USOMEONE'] });
     store.upsertHuddle({ callId: 'R1', channelId: 'Cunconfigured', startedAt: 1000 });
@@ -1207,7 +1209,9 @@ describe('App Home categories and huddle channel controls', () => {
 
     await handlers.publishTab(client, 'UOWNER', 'huddles', 'huddle-channels');
     const view = client.views.publish.mock.calls.at(-1).arguments[0].view;
-    const actionIds = view.blocks.flatMap((block) => (block.elements || []).map((element) => element.action_id));
+    const actionIds = view.blocks
+      .flatMap((block) => (block.elements || []).map((element) => element.action_id))
+      .filter(Boolean);
     assert(actionIds.includes('huddle_channel_configure_Crandom'));
     assert(actionIds.includes('huddle_channel_toggle_tracking_Crandom'));
     assert(actionIds.includes('huddle_channel_toggle_auto_replies_Crandom'));
