@@ -276,6 +276,7 @@ export async function buildDashboardStats({
       role: permissions.role,
       isOwner,
       isManager,
+      fakeAdmin: Boolean(permissions.fakeAdmin),
       managedChannelIds: permissions.managedChannelIds,
     },
     uptime: {

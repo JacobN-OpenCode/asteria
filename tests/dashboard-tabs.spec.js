@@ -78,7 +78,7 @@ describe('tabbed pages', () => {
 
   it('serves each tab to the owner with the tab marked current', async () => {
     for (const [route, label] of [
-      ['/j-log', 'j-log manager'],
+      ['/j-log', 'Orbit Channels'],
       ['/huddles', 'Orbit Huddles'],
       ['/admin', 'Orbit Admin'],
     ]) {
@@ -187,7 +187,7 @@ describe('tabbed pages', () => {
   it('hides the owner tabs and pages from a manager', async () => {
     const html = await (await get('/huddles', managerCookie)).text();
     assert(html.includes('Orbit Huddles'));
-    assert(!html.includes('j-log manager'), 'no j-log tab');
+    assert(!html.includes('Orbit Channels'), 'no channels tab for a manager');
     assert(!html.includes('Orbit Admin'), 'no admin tab');
 
     for (const route of ['/j-log', '/admin']) {
@@ -243,6 +243,66 @@ describe('tabbed pages', () => {
     assert.equal(channel.enabled, false, 'the enabled flag survived');
     assert.equal(channel.auto_replies, false, 'the replies flag survived');
     assert.equal(channel.restrict_triggers, true, 'the triggers flag survived');
+  });
+
+  it('gives a fake admin the view and refuses every write with SIKE', async () => {
+    const FAKE = 'U0FAKEADM1';
+    store.setFakeAdminIds([FAKE]);
+    const fakeCookie = `asteria_session=${server.auth.completeLogin({
+      slackUserId: FAKE,
+      displayName: FAKE,
+      permissions: resolvePermissions({ store, slackUserId: FAKE }),
+    })}`;
+
+    // Looks like the owner from the outside.
+    const page = await (await get('/admin', fakeCookie)).text();
+    assert(page.includes('Orbit Admin'), 'the admin tab is there');
+    assert(page.includes('>owner<'), 'and the role pill says owner');
+    assert.equal((await get('/users', fakeCookie)).status, 200, 'the users tab opens');
+    assert.equal((await get('/j-log', fakeCookie)).status, 200, 'and the channels tab');
+
+    assert.equal((await get('/api/admin', fakeCookie)).status, 200, 'admin data is readable');
+    assert.equal((await get('/api/j-log', fakeCookie)).status, 200, 'the channels page has data');
+    const users = await get('/api/admin/users', fakeCookie);
+    assert.equal(users.status, 200);
+    assert((await users.json()).users.some((user) => user.role === 'owner'));
+
+    const beforeTz = store.getSettings().timezone;
+    const beforeEnabled = store.getHuddleChannel(CHANNEL).enabled;
+    for (const [route, body] of [
+      ['/api/j-log/settings', { timezone: 'UTC' }],
+      ['/api/j-log/draft', { main_update_text: 'nope' }],
+      ['/api/huddles/config', { channelId: CHANNEL, enabled: 0 }],
+      ['/api/huddles/owners', { channelId: CHANNEL, add: 'U0NEWFAKE' }],
+    ]) {
+      const res = await send(route, body, fakeCookie);
+      assert.equal(res.status, 403, `${route} is refused`);
+      const payload = await res.json();
+      assert.equal(payload.sike, true, `${route} answers with the joke`);
+      assert.match(payload.message, /not real/i);
+    }
+
+    // Nothing changed.
+    assert.equal(store.getSettings().timezone, beforeTz);
+    assert.equal(store.getHuddleChannel(CHANNEL).enabled, beforeEnabled);
+    store.setFakeAdminIds([]);
+  });
+
+  it('does not let a plain user near the admin surfaces', async () => {
+    const userCookie = `asteria_session=${server.auth.completeLogin({
+      slackUserId: 'U0PLAINUSR',
+      displayName: 'plain',
+      permissions: resolvePermissions({ store, slackUserId: 'U0PLAINUSR' }),
+    })}`;
+    assert.equal((await get('/admin', userCookie)).status, 403);
+    assert.equal((await get('/users', userCookie)).status, 403);
+    assert.equal((await get('/api/admin/users', userCookie)).status, 403);
+  });
+
+  it('renames the channel manager tab to Orbit Channels', async () => {
+    const html = await (await get('/j-log', ownerCookie)).text();
+    assert(html.includes('Orbit Channels'));
+    assert(!html.includes('j-log manager'), 'the old label is gone');
   });
 
   it('lets the owner adopt a channel the bot is already in', async () => {

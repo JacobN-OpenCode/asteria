@@ -9,6 +9,8 @@ export function renderDashboardHtml({
   oauthConfigured = false,
   signedIn = false,
   role = null,
+  displayRole = null,
+  isAdminViewer = false,
   baseUrl = '',
   view = 'home',
 } = {}) {
@@ -34,17 +36,17 @@ export function renderDashboardHtml({
     <span class="uptime-pill" id="uptime-pill"><span class="skel skel-sm"></span></span>
     ${
       signedIn
-        ? `<span class="who" id="who">${escapeHtml(role || 'user')}</span>
+        ? `<span class="who" id="who">${escapeHtml(displayRole || role || 'user')}</span>
            <form method="post" action="/logout"><button class="btn ghost" type="submit">Sign out</button></form>`
         : `<a class="btn" href="/login">Sign in with Slack</a>`
     }
   </div>
 </header>
 
-${renderTabs(view, { isOwner: role === 'owner', isManager: role === 'manager' })}
+${renderTabs(view, { isOwner: role === 'owner', isManager: role === 'manager', isAdminViewer })}
 
 <main>
-${view === 'home' ? homeView() : view === 'j-log' ? jLogView() : view === 'huddles' ? huddlesView() : adminView()}
+${view === 'home' ? homeView() : view === 'j-log' ? jLogView() : view === 'huddles' ? huddlesView() : view === 'users' ? usersView() : adminView()}
 </main>
 <div class="modal hidden" id="channel-modal" role="dialog" aria-modal="true" aria-labelledby="cm-title">
   <div class="modal-scrim" id="cm-scrim"></div>
@@ -101,11 +103,19 @@ ${view === 'home' ? homeView() : view === 'j-log' ? jLogView() : view === 'huddl
   <span class="muted" id="foot-updated"><span class="skel skel-sm"></span></span>
 </footer>
 
+<div class="sike hidden" id="sike" role="alert" aria-live="assertive">
+  <div>
+    <b>SIKE!</b>
+    <span>You get <em>view</em>, but not real. Nice try though.</span>
+  </div>
+</div>
+
 <script>${SCRIPT}
 if (document.getElementById('about-modal')) {
   if ('${view}' === 'j-log') { loadJLog(); wireJLog(); }
   else if ('${view}' === 'huddles') { loadHuddles(); wireHuddles(); }
   else if ('${view}' === 'admin') { loadAdmin(); }
+  else if ('${view}' === 'users') { loadUsers(); }
 }
 </script>
 </body>
@@ -181,26 +191,28 @@ const TAB_ICONS = {
 
 const TABS = [
   { id: 'home', label: 'Dashboard' },
-  { id: 'j-log', label: 'j-log manager', owner: true },
+  { id: 'j-log', label: 'Orbit Channels', owner: true },
   { id: 'huddles', label: 'Orbit Huddles', manager: true },
   { id: 'admin', label: 'Orbit Admin', owner: true },
+  { id: 'users', label: 'Orbit Users', owner: true },
 ];
 
 const VIEWS = {
   home: { title: 'live dashboard' },
-  'j-log': { title: 'j-log manager' },
+  'j-log': { title: 'orbit channels' },
   huddles: { title: 'orbit huddles' },
   admin: { title: 'orbit admin' },
+  users: { title: 'orbit users' },
 };
 
 /**
  * Only the tabs the viewer can actually use. Showing every tab to everyone was
  * a dead end: the page loaded, then every request behind it answered 403.
  */
-function renderTabs(view, { isOwner = false, isManager = false } = {}) {
+function renderTabs(view, { isOwner = false, isManager = false, isAdminViewer = false } = {}) {
   const tabs = TABS.filter((tab) => {
     if (tab.owner) {
-      return isOwner;
+      return isOwner || isAdminViewer;
     }
     if (tab.manager) {
       return isOwner || isManager;
@@ -221,8 +233,8 @@ ${tabs
 
 function jLogView() {
   return `  <section class="hero">
-    <p class="kicker">j-log manager</p>
-    <h1>The daily <span class="accent">standup</span> channel, on rails.</h1>
+    <p class="kicker">orbit channels</p>
+    <h1>The daily <span class="accent">standup</span>, on rails.</h1>
     <p class="sub">Draft the update, set the question that goes out each morning, and check what has already
       been sent. Saving here changes what the bot posts; it does not post anything until you send it.</p>
   </section>
@@ -339,6 +351,29 @@ function huddlesView() {
     <p class="sub" style="margin:0 0 12px">These already score huddles with the defaults, but they never show up on the
       dashboard until they have a settings row. Track one to give it a card here.</p>
     <div class="cardlist" id="hc-available"></div>
+  </section>`;
+}
+
+function usersView() {
+  return `  <section class="stage">
+  <section class="hero">
+    <p class="kicker">orbit users</p>
+    <h1>Who has a way <span class="accent">in</span>.</h1>
+    <p class="sub">Everyone the dashboard knows about: the owner, the channel managers, and anyone who has
+      signed in. Roles come from the channel owner lists and the app settings.</p>
+  </section>
+  <section class="stat-strip" id="users-strip">
+    ${statCell('users-owner', 'Owners', 'full access')}
+    ${statCell('users-manager', 'Managers', 'their channels')}
+    ${statCell('users-user', 'Members', 'signed in')}
+    ${statCell('users-total', 'Total', 'with access')}
+    ${statCell('users-optout', 'Opted out', 'of the board')}
+  </section>
+  </section>
+
+  <section class="panel">
+    <header class="panel-head"><h2>Everyone</h2><span class="tag" id="users-tag"><span class="skel skel-sm"></span></span></header>
+    <div class="cardlist" id="users-list"><div class="cardrow"><span class="skel" style="width:220px"></span></div></div>
   </section>`;
 }
 
@@ -648,6 +683,19 @@ h1 .accent{color:var(--accent)}
   footer{max-width:none;margin:0 0 0 252px;padding-left:clamp(24px,3vw,48px);padding-right:clamp(24px,3vw,48px)}
   .hero h1{max-width:18ch}
 }
+/* ---------- sike ---------- */
+.sike{position:fixed;inset:0;z-index:100;display:grid;place-items:center;text-align:center;padding:24px;
+  background:radial-gradient(700px 400px at 50% 40%,var(--tint-2),transparent 70%),rgba(17,17,27,.94);
+  backdrop-filter:blur(6px);animation:sike-in .16s ease}
+.sike.hidden{display:none}
+.sike b{display:block;font-size:clamp(64px,18vw,180px);line-height:.9;font-weight:900;letter-spacing:-.06em;
+  color:var(--accent);text-shadow:0 0 50px var(--ring);animation:sike-shake .32s ease 2}
+.sike span{display:block;margin-top:18px;font-size:clamp(15px,2vw,21px);color:var(--ink-2)}
+.sike em{font-style:normal;color:var(--red);font-weight:700}
+@keyframes sike-in{from{opacity:0}to{opacity:1}}
+@keyframes sike-shake{0%,100%{transform:translateX(0) rotate(0)}20%{transform:translateX(-10px) rotate(-1deg)}
+  60%{transform:translateX(10px) rotate(1deg)}}
+
 @media (prefers-reduced-motion:reduce){*{animation:none !important;transition:none !important}}
 /* inline text button, reads as a link but behaves as a button */
 .linkish{background:none;border:0;padding:0;font:inherit;color:var(--accent-bright);cursor:pointer;
@@ -1184,7 +1232,31 @@ const post = (url, body) =>
     method: 'POST',
     headers: { 'content-type': 'application/json' },
     body: JSON.stringify(body),
-  }).then((r) => (r.ok ? r.json() : Promise.reject(new Error('save failed'))));
+  }).then(async (response) => {
+    const data = await response.json().catch(() => ({}));
+    if (data && data.sike){
+      showSike();
+      throw new Error('sike');
+    }
+    if (!response.ok) throw new Error('save failed');
+    return data;
+  });
+
+/* ---------- the joke ---------- */
+let sikeTimer = null;
+function showSike(){
+  const node = $('sike');
+  if (!node) return;
+  node.classList.remove('hidden');
+  const bang = node.querySelector('b');
+  if (bang){
+    bang.style.animation = 'none';
+    void bang.offsetWidth;
+    bang.style.animation = '';
+  }
+  clearTimeout(sikeTimer);
+  sikeTimer = setTimeout(function(){ node.classList.add('hidden'); }, 2400);
+}
 
 function flash(id) {
   const el = $(id);
@@ -1427,6 +1499,35 @@ function wireHuddles() {
       .then(() => loadHuddles())
       .catch(() => {});
   });
+}
+
+function loadUsers() {
+  fetch(base + '/api/admin/users')
+    .then((r) => r.json())
+    .then((d) => {
+      const users = d.users || [];
+      const counts = d.counts || {};
+      setText('users-owner', String(counts.owner || 0));
+      setText('users-manager', String(counts.manager || 0));
+      setText('users-user', String(counts.user || 0));
+      setText('users-total', String(users.length));
+      setText('users-optout', String(users.filter((u) => !u.optedIn).length));
+      setText('users-tag', users.length + ' people');
+      $('users-list').innerHTML = users.length
+        ? users.map((user) =>
+            '<div class="cardrow"><div class="hd"><div class="nm">' +
+              '<img class="avatar" src="' + base + '/avatar?u=' + encodeURIComponent(user.id) + '" alt="">' +
+              '<span>' + escapeHtml(user.name || user.id) + '</span>' +
+              '<span class="tag' + (user.role === 'owner' ? ' ok' : '') + '">' + escapeHtml(user.role) + '</span>' +
+            '</div><span class="id">' + escapeHtml(user.id) + '</span></div>' +
+            '<div class="cm-sub">' + (user.lastLoginAt ? 'last sign in ' + escapeHtml(String(user.lastLoginAt).slice(0, 16).replace('T', ' ')) : 'has not signed in') +
+              ' · leaderboard ' + (user.optedIn ? 'on' : 'off') + '</div></div>',
+          ).join('')
+        : '<div class="emptynote">No users yet.</div>';
+    })
+    .catch(() => {
+      $('users-list').innerHTML = '<div class="emptynote">Could not load users.</div>';
+    });
 }
 
 function loadAdmin() {

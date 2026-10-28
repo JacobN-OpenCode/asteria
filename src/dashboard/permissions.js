@@ -14,7 +14,7 @@ function forStore(store) {
 /** The dashboard's view of the shared permission rules. */
 export function resolvePermissions({ store, slackUserId, settings = null }) {
   if (settings && settings.personal_channel_owner_id === slackUserId) {
-    return { role: ROLES.OWNER, isOwner: true, isManager: true, managedChannelIds: null };
+    return { role: ROLES.OWNER, isOwner: true, isManager: true, fakeAdmin: false, managedChannelIds: null };
   }
   return forStore(store).resolve(slackUserId);
 }

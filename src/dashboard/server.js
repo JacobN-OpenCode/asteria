@@ -18,7 +18,7 @@ import { ORBIT_FAVICON } from './theme.js';
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
 const SESSION_COOKIE = 'asteria_session';
 const SESSION_MAX_AGE_SECONDS = 60 * 60 * 24 * 30;
-const PAGES = { '/j-log': 'j-log', '/huddles': 'huddles', '/admin': 'admin' };
+const PAGES = { '/j-log': 'j-log', '/huddles': 'huddles', '/admin': 'admin', '/users': 'users' };
 // Long enough to stop a channel being a nuisance for a while without needing a
 // separate unpause control.
 const PAUSE_SECONDS = 60 * 60 * 12;
@@ -193,6 +193,21 @@ export function createDashboardServer({
       return false;
     }
     return true;
+  }
+
+  // An admin viewer can open every admin surface, but only the real owner can
+  // change anything. A fake admin gets a 403 with `sike: true`, which the client
+  // turns into a full screen SIKE.
+  function isAdminViewer(session) {
+    return Boolean(session?.permissions.isOwner || session?.permissions.fakeAdmin);
+  }
+
+  function sike(res) {
+    sendJson(res, 403, {
+      error: 'SIKE',
+      sike: true,
+      message: 'You get view, but not real. Nice try though.',
+    });
   }
 
   // Global settings belong to the owner alone. A channel manager runs a
@@ -444,6 +459,42 @@ people who were in the huddle.</p></div></body></html>`;
         'with settings here': String([...configured].filter((id) => inBot.includes(id)).length),
         'tracked but unconfigured': String([...configured].filter((id) => !inBot.includes(id)).length),
         names: inBot.map((id) => `#${names[id] || id}`).join(', ') || 'none',
+      },
+    };
+  }
+
+  /**
+   * Everyone with a relationship to the dashboard. Fake admins are shown as
+   * owners on purpose: from the inside this panel is supposed to look real.
+   */
+  function describeUsers() {
+    const settings = store.getSettings();
+    const ownerId = settings.personal_channel_owner_id;
+    const fakeIds = store.getFakeAdminIds();
+    const managers = new Set(
+      store.listHuddleChannels().flatMap((row) => parseOwnerIds(row.owner_ids).filter((id) => id !== ownerId)),
+    );
+    const seen = new Map(store.listDashboardUsers().map((row) => [row.slack_user_id, row]));
+    const ids = new Set([ownerId, ...fakeIds, ...managers, ...seen.keys()].filter(Boolean));
+    const users = [...ids].map((id) => {
+      const row = seen.get(id) || {};
+      const role = id === ownerId || fakeIds.includes(id) ? 'owner' : managers.has(id) ? 'manager' : 'user';
+      return {
+        id,
+        name: row.display_name || '',
+        role,
+        optedIn: row.leaderboard_opt_in == null ? true : Number(row.leaderboard_opt_in) === 1,
+        lastLoginAt: row.last_login_at || '',
+      };
+    });
+    const order = { owner: 0, manager: 1, user: 2 };
+    users.sort((a, b) => order[a.role] - order[b.role] || a.id.localeCompare(b.id));
+    return {
+      users,
+      counts: {
+        owner: users.filter((u) => u.role === 'owner').length,
+        manager: users.filter((u) => u.role === 'manager').length,
+        user: users.filter((u) => u.role === 'user').length,
       },
     };
   }
@@ -784,6 +835,8 @@ people who were in the huddle.</p></div></body></html>`;
           oauthConfigured: auth.oauthConfigured,
           signedIn: Boolean(auth_),
           role: auth_?.permissions.role || null,
+          displayRole: auth_?.permissions.fakeAdmin ? 'owner' : auth_?.permissions.role || null,
+          isAdminViewer: isAdminViewer(auth_),
           baseUrl: '',
         }),
       );
@@ -798,9 +851,10 @@ people who were in the huddle.</p></div></body></html>`;
         redirect(res, '/login');
         return;
       }
-      const needsOwner = route === '/admin' || route === '/j-log';
+      const needsOwner = route === '/admin' || route === '/j-log' || route === '/users';
       const needsManager = route === '/huddles';
-      if ((needsOwner && !auth_.permissions.isOwner) || (needsManager && !auth_.permissions.isManager)) {
+      const allowedOwnerPage = auth_.permissions.isOwner || auth_.permissions.fakeAdmin;
+      if ((needsOwner && !allowedOwnerPage) || (needsManager && !auth_.permissions.isManager)) {
         sendHtml(
           res,
           403,
@@ -808,6 +862,8 @@ people who were in the huddle.</p></div></body></html>`;
             oauthConfigured: auth.oauthConfigured,
             signedIn: true,
             role: auth_.permissions.role,
+            displayRole: auth_.permissions.fakeAdmin ? 'owner' : auth_.permissions.role,
+            isAdminViewer: isAdminViewer(auth_),
             baseUrl: '',
             view: 'home',
           }),
@@ -821,6 +877,8 @@ people who were in the huddle.</p></div></body></html>`;
           oauthConfigured: auth.oauthConfigured,
           signedIn: true,
           role: auth_.permissions.role,
+          displayRole: auth_.permissions.fakeAdmin ? 'owner' : auth_.permissions.role,
+          isAdminViewer: isAdminViewer(auth_),
           baseUrl: '',
           view: PAGES[route],
         }),
@@ -829,7 +887,14 @@ people who were in the huddle.</p></div></body></html>`;
     }
 
     if (route === '/api/j-log' && method === 'GET') {
-      if (!requireOwner(res, auth_)) return;
+      // Readable by an admin viewer, so the fake admin sees a real looking page.
+      if (!isAdminViewer(auth_)) {
+        if (!auth_) {
+          sendJson(res, 401, { error: 'Sign in first' });
+          return;
+        }
+        return sike(res);
+      }
       sendJson(res, 200, {
         settings: store.getSettings(),
         draft: store.getDraft() || null,
@@ -839,6 +904,7 @@ people who were in the huddle.</p></div></body></html>`;
     }
 
     if (route === '/api/j-log/draft' && method === 'POST') {
+      if (auth_?.permissions.fakeAdmin) return sike(res);
       if (!requireOwner(res, auth_)) return;
       const body = await readJsonBody(req, 16384);
       if (body?.clear) {
@@ -856,6 +922,7 @@ people who were in the huddle.</p></div></body></html>`;
     }
 
     if (route === '/api/j-log/settings' && method === 'POST') {
+      if (auth_?.permissions.fakeAdmin) return sike(res);
       if (!requireOwner(res, auth_)) return;
       const body = await readJsonBody(req);
       // The App Home and the dashboard share one settings row. Only the fields
@@ -890,6 +957,7 @@ people who were in the huddle.</p></div></body></html>`;
     }
 
     if (route === '/api/huddles/config' && method === 'POST') {
+      if (auth_?.permissions.fakeAdmin) return sike(res);
       if (!requireManager(res, auth_)) return;
       const body = await readJsonBody(req);
       const channelId = String(body?.channelId || '');
@@ -917,6 +985,7 @@ people who were in the huddle.</p></div></body></html>`;
     }
 
     if (route === '/api/huddles/owners' && method === 'POST') {
+      if (auth_?.permissions.fakeAdmin) return sike(res);
       if (!requireManager(res, auth_)) return;
       const body = await readJsonBody(req);
       const channelId = String(body?.channelId || '');
@@ -945,11 +1014,22 @@ people who were in the huddle.</p></div></body></html>`;
     }
 
     if (route === '/api/admin' && method === 'GET') {
-      if (!auth_?.permissions.isOwner) {
+      if (!isAdminViewer(auth_)) {
         sendJson(res, 403, { error: 'Owner only' });
         return;
       }
       sendJson(res, 200, await describeAdmin());
+      return;
+    }
+
+    // Who has a way in, and what they are. Admin viewers can read this; only the
+    // owner can act on it, and there is no write endpoint here at all.
+    if (route === '/api/admin/users' && method === 'GET') {
+      if (!isAdminViewer(auth_)) {
+        sendJson(res, 403, { error: 'Owner only' });
+        return;
+      }
+      sendJson(res, 200, describeUsers());
       return;
     }
 
