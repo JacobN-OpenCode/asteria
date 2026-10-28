@@ -106,7 +106,7 @@ describe('huddle pages', () => {
       const res = await get(`/${CALL}`, cookies[who]);
       assert.equal(res.status, 200, `${who} should be allowed`);
       const html = await res.text();
-      assert(html.includes('Huddle overview'), 'renders the page');
+      assert(html.includes('orbit &middot; huddle') || html.includes('orbit · huddle'), 'renders the page');
       assert(html.includes(`name-${IN_THE_HUDDLE}`), 'names the person who was there');
       assert(html.includes('10m in the call'), 'shows why they scored');
     }
@@ -117,7 +117,7 @@ describe('huddle pages', () => {
     // 404 rather than 403, so the response does not prove the huddle is real.
     assert.equal(res.status, 404);
     const html = await res.text();
-    assert(!html.includes('Huddle overview'), 'no huddle data leaks');
+    assert(!html.includes('orbit · huddle'), 'no huddle data leaks');
     assert(!html.includes(`name-${IN_THE_HUDDLE}`), 'not even the attendance');
   });
 
