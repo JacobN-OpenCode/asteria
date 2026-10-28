@@ -1404,6 +1404,51 @@ export function createHuddleTracker({ app, store, client, logger, ownerId = '', 
     }
   }
 
+  // ---------- 67 ----------
+  // Jacob says "67" anywhere the bot is in, the bot says it back. Deliberately
+  // ignores every channel rule: tracking off, replies off, paused, restricted,
+  // owners only. It is one person and one word.
+  const sixtySevenAt = new Map();
+  const SIXTY_SEVEN_COOLDOWN_SECONDS = 5;
+  const SIXTY_SEVEN = /(^|[^0-9])67([^0-9]|$)/;
+  const SIXTY_SEVEN_REPLIES = ['6 7', '6 7 🗣️', 'six seven 🗣️', '6 7. no notes.'];
+
+  async function handleSixtySeven({ message, channel, client: eventClient }) {
+    if (!ownerId || message?.user !== ownerId || message?.bot_id) {
+      return;
+    }
+    if (message?.subtype) {
+      return;
+    }
+    const text = String(message?.text || '');
+    if (!SIXTY_SEVEN.test(text)) {
+      return;
+    }
+    const channelId = message?.channel || channel || '';
+    if (!channelId || !(await isBotChannel(channelId))) {
+      return;
+    }
+    const now = nowEpochSeconds();
+    const last = sixtySevenAt.get(channelId) || 0;
+    if (now - last < SIXTY_SEVEN_COOLDOWN_SECONDS) {
+      return;
+    }
+    sixtySevenAt.set(channelId, now);
+    const reply = SIXTY_SEVEN_REPLIES[Math.floor(Math.random() * SIXTY_SEVEN_REPLIES.length)];
+    const replyClient = eventClient ?? client;
+    await replyClient.chat.postMessage({
+      channel: channelId,
+      ...(message?.thread_ts ? { thread_ts: message.thread_ts } : {}),
+      text: reply,
+    });
+    store.recordTriggerLog({
+      userId: ownerId,
+      action: 'sixty_seven',
+      detail: message?.ts || '',
+      channelId,
+    });
+  }
+
   async function handleGolfBit(payload) {
     const message = payload.message ?? payload.event ?? payload;
     // The event payload does not always carry a client, so fall back to the one
@@ -1474,6 +1519,11 @@ export function createHuddleTracker({ app, store, client, logger, ownerId = '', 
     } catch (error) {
       logger.error('Handle golf bit', error);
     }
+    try {
+      await handleSixtySeven({ message, channel: payload.channel, client: payload.client });
+    } catch (error) {
+      logger.error('Handle 67', error);
+    }
     void handleHuddleMention({
       message,
       channel: payload.channel,
@@ -1517,6 +1567,11 @@ export function createHuddleTracker({ app, store, client, logger, ownerId = '', 
     for (const [key, at] of golfNoticeSeen) {
       if (at < golfCutoff) {
         golfNoticeSeen.delete(key);
+      }
+    }
+    for (const [key, at] of sixtySevenAt) {
+      if (at < golfCutoff) {
+        sixtySevenAt.delete(key);
       }
     }
   }, STALE_SWEEP_INTERVAL_MS);
