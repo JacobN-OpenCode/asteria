@@ -435,6 +435,17 @@ export async function createStore(databasePath, options = {}) {
       created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
     );
 
+    -- One row per person per answer, not per version: the version column says
+    -- which wording they answered, so bumping it makes the question come back
+    -- without losing what they said last time.
+    CREATE TABLE IF NOT EXISTS user_agreements (
+      user_id TEXT PRIMARY KEY,
+      version TEXT NOT NULL DEFAULT '',
+      agreed INTEGER NOT NULL DEFAULT 0,
+      created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+    );
+
     CREATE TABLE IF NOT EXISTS huddle_channels (
       channel_id TEXT PRIMARY KEY,
       name TEXT NOT NULL DEFAULT '',
@@ -2794,6 +2805,31 @@ export async function createStore(databasePath, options = {}) {
       );
       persist();
       return this.getDashboardUser(slackUserId);
+    },
+
+    getUserAgreement(userId) {
+      return bindAndFetchOne(
+        database,
+        'SELECT user_id, version, agreed, created_at, updated_at FROM user_agreements WHERE user_id = $id',
+        { $id: String(userId || '') },
+      );
+    },
+
+    setUserAgreement(userId, { version = '', agreed = false } = {}) {
+      bindAndRun(
+        database,
+        `
+        INSERT INTO user_agreements (user_id, version, agreed, created_at, updated_at)
+        VALUES ($id, $version, $agreed, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+        ON CONFLICT(user_id) DO UPDATE SET
+          version = excluded.version,
+          agreed = excluded.agreed,
+          updated_at = CURRENT_TIMESTAMP
+      `,
+        { $id: String(userId || ''), $version: String(version || ''), $agreed: agreed ? 1 : 0 },
+      );
+      persist();
+      return this.getUserAgreement(userId);
     },
 
     listDashboardUsers() {

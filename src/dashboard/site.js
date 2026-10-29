@@ -152,6 +152,19 @@ td.act{text-align:right;white-space:nowrap}
 .lead .p{font-family:var(--mono);font-size:12px;color:var(--ink-2)}
 .lead li.me{background:rgba(203,166,247,.07)}
 
+/* the one question */
+.agree-wrap{margin-bottom:18px}
+.agree{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:18px;align-items:center;
+  border:1px solid var(--line-2);border-left:2px solid var(--accent);border-radius:var(--radius-lg);
+  background:var(--surface);padding:14px 16px}
+.agree h2{font-size:14px;margin:2px 0 4px}
+.agree .agree-body{font-size:12.5px;color:var(--ink-2);max-width:74ch}
+.agree .hint{margin-top:4px;max-width:74ch}
+.agree .agree-actions{display:flex;gap:8px;flex:none}
+.agree-row{display:flex;align-items:center;gap:8px;padding:8px 2px;border-bottom:1px solid var(--line);
+  font-size:12px;color:var(--muted)}
+@media (max-width:700px){.agree{grid-template-columns:1fr}.agree .agree-actions{justify-content:flex-start}}
+
 /* misc */
 .filters{display:flex;gap:10px;align-items:flex-end;flex-wrap:wrap;margin-bottom:14px}
 .filters .field{gap:4px}
@@ -479,6 +492,8 @@ const VIEWS = {
     <div class="actions"><a class="btn ghost" href="/huddles">All huddles</a></div>
   </div>
 
+  <section class="agree-wrap hidden" id="agreement" aria-live="polite"></section>
+
   <section class="kpis" aria-label="Summary">
     <div class="kpi"><div class="k">Huddles live</div><div class="v" id="k-active"><span class="skel" style="width:30px"></span></div><div class="h">right now</div></div>
     <div class="kpi"><div class="k">Ended, 24h</div><div class="v" id="k-24h"><span class="skel" style="width:30px"></span></div><div class="h">last day</div></div>
@@ -784,6 +799,51 @@ function channelRows(channels){
   }).join('');
 }
 
+async function initAgreement(){
+  const slot = $('agreement');
+  if (!slot) return;
+
+  function render(data){
+    slot.classList.remove('hidden');
+    if (data.required) {
+      slot.innerHTML =
+        '<div class="agree">' +
+          '<div>' +
+            '<p class="kicker">one thing first</p>' +
+            '<h2>' + esc(data.title) + '</h2>' +
+            '<p class="agree-body">' + esc(data.body) + '</p>' +
+            '<p class="hint">' + esc(data.note) + '</p>' +
+          '</div>' +
+          '<div class="agree-actions">' +
+            '<button class="btn" type="button" data-agree="1">Allow</button>' +
+            '<button class="btn ghost" type="button" data-agree="0">No thanks</button>' +
+          '</div>' +
+        '</div>';
+      return;
+    }
+    slot.innerHTML =
+      '<div class="agree-row">' +
+        '<span>' + esc(data.title) + ':</span>' +
+        '<span class="tag ' + (data.agreed ? 'ok' : '') + '">' + (data.agreed ? 'allowed' : 'off') + '</span>' +
+        '<button class="linkish small" type="button" data-agree="' + (data.agreed ? '0' : '1') + '">' +
+          (data.agreed ? 'Turn off' : 'Turn on') +
+        '</button>' +
+      '</div>';
+  }
+
+  slot.addEventListener('click', function (event) {
+    const button = event.target.closest('button[data-agree]');
+    if (!button) return;
+    const agreed = button.dataset.agree === '1';
+    button.disabled = true;
+    api('/api/me/agreement', { method: 'POST', body: JSON.stringify({ agreed: agreed }) })
+      .then(render)
+      .catch(function () { button.disabled = false; });
+  });
+
+  api('/api/me/agreement').then(render).catch(function () {});
+}
+
 async function initDashboard(){
   const set = function (id, text) { const el = $(id); if (el) el.textContent = text; };
 
@@ -1086,7 +1146,7 @@ async function initJLog(){
   });
 }
 
-if (view === 'dashboard') initDashboard();
+if (view === 'dashboard') { initAgreement(); initDashboard(); }
 else if (view === 'huddles') initHuddles().catch(function () {});
 else if (view === 'channels') initChannels().catch(function () {});
 else if (view === 'recaps') initRecaps().catch(function () {});
