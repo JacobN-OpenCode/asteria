@@ -156,13 +156,24 @@ describe('dashboard server', () => {
   it('serves the dashboard, and health as json', async () => {
     const harness = await startDashboard();
     try {
-      const page = await fetch(`${harness.base}/`);
+      const landing = await fetch(`${harness.base}/`);
+      assert.equal(landing.status, 200);
+      assert.match(landing.headers.get('content-type'), /text\/html/);
+      const landingHtml = await landing.text();
+      assert.match(landingHtml, /Jacob's Orbit/);
+      assert.match(landingHtml, /Your huddles/, 'the public page explains the product');
+      assert.match(landingHtml, /--accent:#cba6f7/, 'Catppuccin Mocha mauve is the product accent');
+      assert.match(landingHtml, /color-scheme:dark/);
+
+      const anonymous = await fetch(`${harness.base}/dashboard`, { redirect: 'manual' });
+      assert.equal(anonymous.status, 302, 'the dashboard needs a session');
+      assert.match(anonymous.headers.get('location'), /^\/login\?next=%2Fdashboard$/);
+
+      const owner = await signIn(harness);
+      const page = await fetch(`${harness.base}/dashboard`, { headers: { cookie: owner.cookie } });
       assert.equal(page.status, 200);
-      assert.match(page.headers.get('content-type'), /text\/html/);
       const html = await page.text();
-      assert.match(html, /Jacob's Orbit/);
-      assert.match(html, /--accent:#cba6f7/, 'Catppuccin Mocha mauve is the product accent');
-      assert.match(html, /color-scheme:dark/);
+      assert.match(html, /Everything in orbit/, 'the dashboard is behind sign in');
 
       const health = await fetch(`${harness.base}/health`);
       assert.equal(health.status, 200);
@@ -190,10 +201,7 @@ describe('dashboard server', () => {
   it('verifies a Slack member id by DM code before creating a session', async () => {
     const harness = await startDashboard();
     try {
-      assert.equal((await fetch(`${harness.base}/api/stats`)).status, 200, 'stats are public');
-      const stats = await (await fetch(`${harness.base}/api/stats`)).json();
-      assert.equal(stats.viewer.signedIn, false);
-      assert.equal(stats.logs.length, 0, 'no activity log for signed-out visitors');
+      assert.equal((await fetch(`${harness.base}/api/stats`)).status, 401, 'stats need a session');
 
       const bad = await fetch(`${harness.base}/api/auth/verify`, {
         method: 'POST',
@@ -247,23 +255,23 @@ describe('dashboard server', () => {
       const owner = await signIn(harness);
       const user = await signIn(harness, { slackUserId: 'U0PLAIN01' });
 
-      // The board is public now: every row is named, subject to opt-out.
-      const anonymous = await (await fetch(`${harness.base}/api/stats`)).json();
+      // Everyone signed in sees who scored, subject to each person's opt-out.
+      const signedInView = await (await fetch(`${harness.base}/api/stats`, { headers: { cookie: user.cookie } })).json();
       assert.deepEqual(
-        anonymous.leaderboard.map((row) => row.userId).sort(),
+        signedInView.leaderboard.map((row) => row.userId).sort(),
         ['U0AEYDUCLKF', 'U0PLAIN01'],
-        'anonymous viewers see who scored',
+        'signed-in viewers see who scored',
       );
       assert(
-        anonymous.leaderboard.every((row) => row.displayName && row.displayName.length),
+        signedInView.leaderboard.every((row) => row.displayName && row.displayName.length),
         'with a name on each row',
       );
       assert(
-        anonymous.leaderboard.every((row) => row.key === row.userId),
+        signedInView.leaderboard.every((row) => row.key === row.userId),
         'and a stable row key',
       );
       assert.deepEqual(
-        anonymous.leaderboard.map((row) => row.points),
+        signedInView.leaderboard.map((row) => row.points),
         [50, 30],
         'and the points themselves are unchanged',
       );
@@ -332,8 +340,7 @@ describe('dashboard server', () => {
     store.recordTriggerLog({ userId: 'U1', action: 'huddle_join', detail: 'R1', channelId: 'Cbot' });
     const harness = await startDashboard({ store });
     try {
-      const anonymous = await (await fetch(`${harness.base}/api/stats`)).json();
-      assert.equal(anonymous.logs.length, 0);
+      assert.equal((await fetch(`${harness.base}/api/stats`)).status, 401, 'no stats without a session');
 
       const user = await signIn(harness, { slackUserId: 'U0PLAIN01' });
       const asUser = await (await fetch(`${harness.base}/api/stats`, { headers: { cookie: user.cookie } })).json();
@@ -359,9 +366,9 @@ describe('dashboard server', () => {
       });
       assert.equal(out.status, 302);
       assert.equal(
-        (await (await fetch(`${harness.base}/api/stats`, { headers: { cookie: signedIn.cookie } })).json()).viewer
-          .signedIn,
-        false,
+        (await fetch(`${harness.base}/api/stats`, { headers: { cookie: signedIn.cookie } })).status,
+        401,
+        'the old cookie no longer works',
       );
     } finally {
       await harness.stop();

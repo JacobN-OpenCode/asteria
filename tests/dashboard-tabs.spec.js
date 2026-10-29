@@ -72,7 +72,7 @@ describe('tabbed pages', () => {
     for (const route of ['/j-log', '/huddles', '/admin']) {
       const res = await get(route);
       assert.equal(res.status, 302, `${route} should redirect`);
-      assert.equal(res.headers.get('location'), '/login');
+      assert.match(res.headers.get('location'), /^\/login\?next=/);
     }
   });
 
@@ -84,7 +84,7 @@ describe('tabbed pages', () => {
     ]) {
       const html = await (await get(route, ownerCookie)).text();
       assert(html.includes(label), `${route} shows its tab`);
-      assert(html.includes('class="brand" href="/"'), `${route} links home from the icon`);
+      assert(html.includes('class="brand" href="/dashboard"'), `${route} links back to the dashboard`);
     }
   });
 
