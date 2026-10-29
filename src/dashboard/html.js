@@ -1319,13 +1319,14 @@ async function loadHuddlesList(){
     huddleFiltersReady = true;
     $('huddle-sort').addEventListener('change', loadHuddlesList);
     $('huddle-channel').addEventListener('change', loadHuddlesList);
-    const channels = await apiJson('/api/channels');
-    if (channels) {
-      $('huddle-channel').innerHTML = '<option value="">All channels</option>' +
-        channels.channels.map(function (item) {
-          return '<option value="' + escapeHtml(item.id) + '">' + escapeHtml(item.name) + '</option>';
-        }).join('');
-    }
+    // Only channels that actually appear in the visible list, so a private
+    // channel you cannot see never turns up in the filter.
+    const seen = {};
+    data.channels.forEach(function (item) { seen[item.id] = item.name; });
+    $('huddle-channel').innerHTML = '<option value="">All channels</option>' +
+      Object.keys(seen).sort().map(function (id) {
+        return '<option value="' + escapeHtml(id) + '">' + escapeHtml(seen[id]) + '</option>';
+      }).join('');
   }
 }
 

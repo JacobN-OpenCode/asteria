@@ -335,6 +335,35 @@ describe('dashboard server', () => {
     }
   });
 
+  it('keeps private channel huddles out of the list for non-members', async () => {
+    const store = await createTestStore();
+    const now = Math.floor(Date.now() / 1000);
+    store.upsertHuddleChannel({ channelId: 'Cbot', name: 'public', isPrivate: false });
+    store.upsertHuddleChannel({ channelId: 'Cpriv', name: 'secret', isPrivate: true });
+    store.upsertHuddle({ callId: 'Rpub', channelId: 'Cbot', startedAt: now - 200, endedAt: now - 100, status: 'ended' });
+    store.upsertHuddle({ callId: 'Rpriv', channelId: 'Cpriv', startedAt: now - 200, endedAt: now - 100, status: 'ended' });
+    const harness = await startDashboard({
+      store,
+      botChannels: { list: async () => ['Cbot', 'Cpriv'], invalidate() {} },
+    });
+    try {
+      const user = await signIn(harness, { slackUserId: 'U0PLAIN01' });
+      const userList = await (
+        await fetch(`${harness.base}/api/huddles`, { headers: { cookie: user.cookie } })
+      ).json();
+      assert(userList.huddles.some((huddle) => huddle.callId === 'Rpub'), 'public huddles are listed');
+      assert(!userList.huddles.some((huddle) => huddle.callId === 'Rpriv'), 'private huddles are not');
+
+      const owner = await signIn(harness);
+      const ownerList = await (
+        await fetch(`${harness.base}/api/huddles`, { headers: { cookie: owner.cookie } })
+      ).json();
+      assert(ownerList.huddles.some((huddle) => huddle.callId === 'Rpriv'), 'the owner sees both');
+    } finally {
+      await harness.stop();
+    }
+  });
+
   it('only serves the activity log to the owner', async () => {
     const store = await createTestStore();
     store.recordTriggerLog({ userId: 'U1', action: 'huddle_join', detail: 'R1', channelId: 'Cbot' });
