@@ -64,8 +64,7 @@ describe('serving the notice', () => {
     assert.equal(JSON.parse(health.body).ok, true, 'health is not the notice');
 
     const stats = await request(base, '/api/stats', 'asteria.navaratne.uk');
-    assert.equal(stats.status, 200);
-    assert.equal(typeof JSON.parse(stats.body).generatedAt, 'string', 'an open tab keeps polling');
+    assert.equal(stats.status, 401, 'the api is not the notice, it just needs a session');
   });
 });
 

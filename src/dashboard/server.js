@@ -11,6 +11,7 @@ import { createFlaronDirectory } from './flaron.js';
 import { renderDashboardHtml } from './html.js';
 import { renderHuddlePage } from './huddle-page.js';
 import { resolvePermissions } from './permissions.js';
+import { renderLandingPage } from './landing.js';
 import { isLegacyHost, renderRebrandPage } from './rebrand.js';
 import { channelSlug, parseRecapLink, renderRecapPage } from './recap.js';
 import { buildDashboardStats } from './stats.js';
@@ -20,6 +21,7 @@ const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../
 const SESSION_COOKIE = 'asteria_session';
 const SESSION_MAX_AGE_SECONDS = 60 * 60 * 24 * 30;
 const PAGES = {
+  '/dashboard': 'home',
   '/j-log': 'j-log',
   '/huddles': 'huddles',
   '/recaps': 'recaps',
@@ -690,7 +692,7 @@ people who were in the huddle.</p></div></body></html>`;
           permissions,
         });
         res.writeHead(302, {
-          location: safeNextRoute(decodeURIComponent(cookies.asteria_oauth_next || '')) || '/',
+          location: safeNextRoute(decodeURIComponent(cookies.asteria_oauth_next || '')) || '/dashboard',
           'set-cookie': [
             sessionCookie(token, req),
             'asteria_oauth_state=; Path=/; Max-Age=0',
@@ -723,7 +725,7 @@ people who were in the huddle.</p></div></body></html>`;
       // Straight into the dashboard with the session already set, which is the
       // whole point of a link: nothing to copy, nothing to type.
       res.writeHead(302, {
-        location: '/',
+        location: '/dashboard',
         'set-cookie': [sessionCookie(token, req)],
         'cache-control': 'no-store',
       });
@@ -784,6 +786,10 @@ people who were in the huddle.</p></div></body></html>`;
     const auth_ = readSession(req);
 
     if (route === '/api/stats' && method === 'GET') {
+      if (!auth_) {
+        sendJson(res, 401, { error: 'Sign in with Slack to see the dashboard.' });
+        return;
+      }
       const viewerKey = `${auth_?.session.slack_user_id || 'anon'}:${auth_?.permissions.role || 'none'}`;
       let build = statsBuilds.get(viewerKey);
       if (!build) {
@@ -901,18 +907,7 @@ people who were in the huddle.</p></div></body></html>`;
     }
 
     if (route === '/' && method === 'GET') {
-      sendHtml(
-        res,
-        200,
-        renderDashboardHtml({
-          oauthConfigured: auth.oauthConfigured,
-          signedIn: Boolean(auth_),
-          role: auth_?.permissions.role || null,
-          displayRole: auth_?.permissions.fakeAdmin ? 'owner' : auth_?.permissions.role || null,
-          isAdminViewer: isAdminViewer(auth_),
-          baseUrl: '',
-        }),
-      );
+      sendHtml(res, 200, renderLandingPage({ signedIn: Boolean(auth_) }));
       return;
     }
 
@@ -1029,7 +1024,7 @@ people who were in the huddle.</p></div></body></html>`;
     // huddle tab belongs to whoever manages at least one channel.
     if (PAGES[route] && method === 'GET') {
       if (!auth_) {
-        redirect(res, '/login');
+        redirect(res, `/login?next=${encodeURIComponent(route)}`);
         return;
       }
       const needsOwner = route === '/admin' || route === '/j-log' || route === '/users' || route === '/messages';

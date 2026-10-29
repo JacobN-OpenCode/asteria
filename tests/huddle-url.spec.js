@@ -174,7 +174,7 @@ describe('a huddle link the bot posts actually resolves', () => {
         headers: { cookie: jar.cookies },
       }),
     );
-    assert.equal(callback.headers.get('location'), '/');
+    assert.equal(callback.headers.get('location'), '/dashboard');
   });
 
   test('no base URL means no link, rather than a link to nowhere', () => {
