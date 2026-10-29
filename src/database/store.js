@@ -483,6 +483,9 @@ export async function createStore(databasePath, options = {}) {
       PRIMARY KEY (huddle_id, user_id)
     );
 
+    CREATE INDEX IF NOT EXISTS idx_huddles_channel_started ON huddles(channel_id, started_at);
+    CREATE INDEX IF NOT EXISTS idx_huddles_started ON huddles(started_at);
+    CREATE INDEX IF NOT EXISTS idx_huddle_members_call ON huddle_members(call_id);
     CREATE INDEX IF NOT EXISTS idx_huddle_awards_user ON huddle_awards(user_id);
     CREATE INDEX IF NOT EXISTS idx_huddle_awards_channel ON huddle_awards(channel_id);
 
@@ -1181,8 +1184,127 @@ export async function createStore(databasePath, options = {}) {
       });
     },
 
+    /**
+     * The four numbers the dashboard header needs, straight from SQL.
+     *
+     * Deliberately does not go near Slack, Cachet or Flaron, so the shell can
+     * paint while the slower sections are still loading.
+     */
+    huddleOverview(channelIds = []) {
+      const ids = Array.isArray(channelIds) ? channelIds.filter(Boolean) : [];
+      if (ids.length === 0) {
+        return { total: 0, active: 0, ended24h: 0, people: 0, points: 0, channels: 0 };
+      }
+      const placeholders = ids.map((_, index) => `$c${index}`).join(',');
+      const params = Object.fromEntries(ids.map((id, index) => [`$c${index}`, String(id)]));
+      const now = Math.floor(Date.now() / 1000);
+      const row = bindAndFetchOne(
+        database,
+        `
+        SELECT COUNT(1) AS total,
+          SUM(CASE WHEN status = 'active' THEN 1 ELSE 0 END) AS active,
+          SUM(CASE WHEN status = 'ended' AND ended_at >= $since THEN 1 ELSE 0 END) AS ended24h,
+          SUM(CASE WHEN status = 'opted_out' THEN 1 ELSE 0 END) AS optedOut,
+          MAX(CASE WHEN status = 'ended' AND ended_at > started_at THEN ended_at - started_at END) AS longest,
+          AVG(CASE WHEN status = 'ended' AND ended_at > started_at THEN ended_at - started_at END) AS average
+        FROM huddles WHERE channel_id IN (${placeholders})
+      `,
+        { ...params, $since: now - 86400 },
+      );
+      const people = bindAndFetchOne(
+        database,
+        `
+        SELECT COUNT(DISTINCT m.user_id) AS n FROM huddle_members m
+        JOIN huddles h ON h.call_id = m.call_id
+        WHERE h.channel_id IN (${placeholders})
+      `,
+        params,
+      );
+      const points = bindAndFetchOne(
+        database,
+        `
+        SELECT COALESCE(SUM(a.points), 0) AS n FROM huddle_awards a
+        JOIN huddles h ON h.call_id = a.huddle_id
+        WHERE h.channel_id IN (${placeholders})
+      `,
+        params,
+      );
+      return {
+        total: Number(row?.total) || 0,
+        active: Number(row?.active) || 0,
+        ended24h: Number(row?.ended24h) || 0,
+        people: Number(people?.n) || 0,
+        points: Number(points?.n) || 0,
+        channels: ids.length,
+        longestSeconds: Number(row?.longest) || 0,
+        averageSeconds: Number(row?.average) || 0,
+        optedOut: Number(row?.optedOut) || 0,
+      };
+    },
+
     listHuddles() {
       return bindAndFetchAll(database, 'SELECT * FROM huddles ORDER BY started_at DESC');
+    },
+
+    /**
+     * One row per huddle with the counts a list needs, sorted deliberately.
+     *
+     * This exists so the huddle list does not have to run a per-huddle query for
+     * members and points from the client, and so the ordering is defined once.
+     */
+    listHuddleSummaries({ limit = 50, offset = 0, channelId = '', channelIds = null, sort = 'recent' } = {}) {
+      const order = {
+        recent: 'h.started_at DESC',
+        longest: `(COALESCE(h.ended_at, CAST(strftime('%s', 'now') AS INTEGER)) - h.started_at) DESC`,
+        points: 'points DESC, h.started_at DESC',
+      }[sort] || 'h.started_at DESC';
+      const scopedIds = Array.isArray(channelIds) && channelIds.length ? channelIds : null;
+      const filter = scopedIds
+        ? `AND channel_id IN (${scopedIds.map((_, index) => `$c${index}`).join(',')})`
+        : channelId
+          ? 'AND channel_id = $channel_id'
+          : '';
+      const filterParams = scopedIds
+        ? Object.fromEntries(scopedIds.map((id, index) => [`$c${index}`, String(id)]))
+        : channelId
+          ? { $channel_id: String(channelId) }
+          : {};
+      const rows = bindAndFetchAll(
+        database,
+        `
+        SELECT h.call_id, h.channel_id, h.status, h.started_at, h.ended_at,
+          (SELECT COUNT(*) FROM huddle_members m WHERE m.call_id = h.call_id) AS members,
+          (SELECT COALESCE(SUM(a.points), 0) FROM huddle_awards a WHERE a.huddle_id = h.call_id) AS points
+        FROM huddles h
+        WHERE h.channel_id <> '' ${filter}
+        ORDER BY ${order}
+        LIMIT $limit OFFSET $offset
+      `,
+        {
+          $limit: Math.max(1, Math.min(200, Number(limit) || 50)),
+          $offset: Math.max(0, Number(offset) || 0),
+          ...filterParams,
+        },
+      );
+      const total = Number(
+        bindAndFetchOne(
+          database,
+          `SELECT COUNT(1) AS n FROM huddles WHERE channel_id <> '' ${filter}`,
+          filterParams,
+        )?.n,
+      ) || 0;
+      return {
+        total,
+        huddles: rows.map((row) => ({
+          callId: row.call_id,
+          channelId: row.channel_id,
+          status: row.status,
+          startedAt: Number(row.started_at) || 0,
+          endedAt: row.ended_at ? Number(row.ended_at) : null,
+          members: Number(row.members) || 0,
+          points: Number(row.points) || 0,
+        })),
+      };
     },
 
     /** Huddles the bot still believes are running, oldest first. */

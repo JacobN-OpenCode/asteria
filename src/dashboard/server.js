@@ -24,6 +24,7 @@ const PAGES = {
   '/dashboard': 'home',
   '/j-log': 'j-log',
   '/huddles': 'huddles',
+  '/channels': 'channels',
   '/recaps': 'recaps',
   '/admin': 'admin',
   '/users': 'users',
@@ -64,6 +65,79 @@ export function createDashboardServer({
   // Two tabs open at once used to trigger two identical builds, each asking
   // Slack the same questions. Share the build that is already running.
   const statsBuilds = new Map();
+  // One build is shared by every section endpoint for a few seconds. Writes that
+  // change the board clear it, so this is a request coalescer, not a stale page.
+  const statsCache = new Map();
+  const STATS_TTL_MS = 15_000;
+  const STATS_CACHE_MAX = 120;
+  const viewerKey = (session) => `${session?.session?.slack_user_id || 'anon'}:${session?.permissions?.role || 'none'}`;
+  const invalidateStats = () => statsCache.clear();
+
+  /**
+   * The leaderboard on its own.
+   *
+   * It needs the database and Cachet profiles, not Flaron, not Slack channel
+   * lookups. Building it through the full dashboard payload made the board wait
+   * seconds for data it never displays.
+   */
+  async function buildLeaderboard(session) {
+    const channelIds = await botChannels.list();
+    const scope = store
+      .listTrackedHuddleChannels()
+      .filter((channel) => channelIds.includes(channel.channel_id))
+      .map((channel) => channel.channel_id);
+    // The SQL already drops anyone who opted out of the board.
+    const rows = store.listHuddleLeaderboard(25, scope);
+    const profiles = cachet && rows.length ? await cachet.list(rows.map((row) => row.user_id)).catch(() => ({})) : {};
+    const managers = new Set(
+      store.listHuddleChannels().flatMap((channel) => parseOwnerIds(channel.owner_ids)),
+    );
+    return rows.map((row, index) => {
+      const profile = profiles[row.user_id] || {};
+      return {
+        rank: index + 1,
+        key: row.user_id,
+        userId: row.user_id,
+        points: Number(row.points) || 0,
+        displayName: profile.displayName || profile.realName || row.user_id,
+        realName: profile.realName || '',
+        pronouns: profile.pronouns || '',
+        imageUrl: profile.imageUrl || (cachet ? cachet.avatarUrl(row.user_id) : ''),
+        profileUrl: cachet ? cachet.profileUrl(row.user_id) : '',
+        channelManager: managers.has(row.user_id),
+      };
+    });
+  }
+
+  async function statsFor(session) {
+    const key = viewerKey(session);
+    const hit = statsCache.get(key);
+    if (hit && Date.now() - hit.at < STATS_TTL_MS) {
+      return hit.body;
+    }
+    let build = statsBuilds.get(key);
+    if (!build) {
+      build = buildDashboardStats({
+        store,
+        botChannels,
+        permissions: session?.permissions || { role: null, isOwner: false, isManager: false, managedChannelIds: [] },
+        cachet,
+        flaron,
+        slack,
+        startedAt,
+        statusEvents: readStatusEvents(eventsFilePath),
+        viewerId: session?.session?.slack_user_id || '',
+      });
+      statsBuilds.set(key, build);
+      build.finally(() => statsBuilds.delete(key)).catch(() => {});
+    }
+    const body = await build;
+    if (statsCache.size > STATS_CACHE_MAX) {
+      statsCache.clear();
+    }
+    statsCache.set(key, { at: Date.now(), body });
+    return body;
+  }
   // A member can post a recap, but not fifty of them in a minute.
   const recapPosts = new Map();
   const RECAP_LIMIT = 10;
@@ -790,32 +864,117 @@ people who were in the huddle.</p></div></body></html>`;
         sendJson(res, 401, { error: 'Sign in with Slack to see the dashboard.' });
         return;
       }
-      const viewerKey = `${auth_?.session.slack_user_id || 'anon'}:${auth_?.permissions.role || 'none'}`;
-      let build = statsBuilds.get(viewerKey);
-      if (!build) {
-        build = buildDashboardStats({
-          store,
-          botChannels,
-          permissions: auth_?.permissions || { role: null, isOwner: false, isManager: false, managedChannelIds: [] },
-          cachet,
-          flaron,
-          slack,
-          startedAt,
-          statusEvents: readStatusEvents(eventsFilePath),
-          viewerId: auth_?.session.slack_user_id || '',
-        });
-        statsBuilds.set(viewerKey, build);
-        build.finally(() => statsBuilds.delete(viewerKey)).catch(() => {});
-      }
-      const stats = await build;
+      const stats = await statsFor(auth_);
       sendJson(res, 200, {
         ...stats,
         viewer: {
           ...stats.viewer,
-          signedIn: Boolean(auth_),
-          userId: auth_?.session.slack_user_id || null,
-          leaderboardOptIn: auth_ ? store.isLeaderboardOptedIn(auth_.session.slack_user_id) : true,
+          signedIn: true,
+          userId: auth_.session.slack_user_id,
+          leaderboardOptIn: store.isLeaderboardOptedIn(auth_.session.slack_user_id),
         },
+      });
+      return;
+    }
+
+    // The dashboard shell renders immediately and asks for these separately, so
+    // one slow section never holds up the rest of the page.
+    if (route === '/api/overview' && method === 'GET') {
+      if (!auth_) {
+        sendJson(res, 401, { error: 'Sign in with Slack to see the dashboard.' });
+        return;
+      }
+      const channelIds = await botChannels.list();
+      const overview = store.huddleOverview(channelIds);
+      const events = readStatusEvents(eventsFilePath);
+      sendJson(res, 200, {
+        generatedAt: new Date().toISOString(),
+        ...overview,
+        logs: auth_.permissions.isOwner ? store.listTriggerLog(20, channelIds) : [],
+        uptime: {
+          startedAt: new Date(startedAt).toISOString(),
+          seconds: Math.max(0, Math.round((Date.now() - startedAt) / 1000)),
+          state: events.at(-1)?.state || 'unknown',
+        },
+        viewer: {
+          role: auth_.permissions.role,
+          isOwner: auth_.permissions.isOwner,
+          isManager: auth_.permissions.isManager,
+          fakeAdmin: Boolean(auth_.permissions.fakeAdmin),
+          signedIn: true,
+          userId: auth_.session.slack_user_id,
+        },
+      });
+      return;
+    }
+
+    if (route === '/api/leaderboard' && method === 'GET') {
+      if (!auth_) {
+        sendJson(res, 401, { error: 'Sign in with Slack to see the board.' });
+        return;
+      }
+      const rows = await buildLeaderboard(auth_);
+      sendJson(res, 200, {
+        generatedAt: new Date().toISOString(),
+        rows,
+        viewer: {
+          role: auth_.permissions.role,
+          isOwner: auth_.permissions.isOwner,
+          isManager: auth_.permissions.isManager,
+          signedIn: true,
+          userId: auth_.session.slack_user_id,
+          leaderboardOptIn: store.isLeaderboardOptedIn(auth_.session.slack_user_id),
+        },
+      });
+      return;
+    }
+
+    if (route === '/api/channels' && method === 'GET') {
+      if (!auth_) {
+        sendJson(res, 401, { error: 'Sign in with Slack to see the channels.' });
+        return;
+      }
+      const stats = await statsFor(auth_);
+      sendJson(res, 200, { generatedAt: stats.generatedAt, channels: stats.channels });
+      return;
+    }
+
+    if (route === '/api/huddles' && method === 'GET') {
+      if (!auth_) {
+        sendJson(res, 401, { error: 'Sign in with Slack to see the huddles.' });
+        return;
+      }
+      const channelIds = await botChannels.list();
+      const limit = Math.max(1, Math.min(100, Number(url.searchParams.get('limit')) || 40));
+      const offset = Math.max(0, Number(url.searchParams.get('offset')) || 0);
+      const sort = String(url.searchParams.get('sort') || 'recent');
+      const channelId = String(url.searchParams.get('channel') || '');
+      const { huddles, total } = store.listHuddleSummaries({
+        limit,
+        offset,
+        channelId,
+        channelIds,
+        sort,
+      });
+      const names = channelIds.length ? await botChannels.names(channelIds) : {};
+      const now = Math.floor(Date.now() / 1000);
+      const scoped = huddles.filter((huddle) => channelIds.includes(huddle.channelId));
+      const channels = [...new Set(scoped.map((huddle) => huddle.channelId))].map((id) => ({
+        id,
+        name: names[id] || id,
+      }));
+      sendJson(res, 200, {
+        total,
+        channels,
+        huddles: scoped.map((huddle) => ({
+          ...huddle,
+          channelName: names[huddle.channelId] || huddle.channelId,
+          durationSeconds: huddle.endedAt
+            ? Math.max(0, huddle.endedAt - huddle.startedAt)
+            : Math.max(0, now - huddle.startedAt),
+          isLive: huddle.status === 'active' && !huddle.endedAt,
+          url: `/${huddle.callId}`,
+        })),
       });
       return;
     }
@@ -827,6 +986,7 @@ people who were in the huddle.</p></div></body></html>`;
       }
       const { optedIn } = await readJsonBody(req);
       const updated = store.setDashboardLeaderboardOptIn(auth_.session.slack_user_id, Boolean(optedIn));
+      invalidateStats();
       sendJson(res, 200, { ok: true, leaderboardOptIn: Number(updated?.leaderboard_opt_in ?? 0) === 1 });
       return;
     }
@@ -1028,7 +1188,7 @@ people who were in the huddle.</p></div></body></html>`;
         return;
       }
       const needsOwner = route === '/admin' || route === '/j-log' || route === '/users' || route === '/messages';
-      const needsManager = route === '/huddles' || route === '/recaps';
+      const needsManager = route === '/huddles' || route === '/channels' || route === '/recaps';
       const allowedOwnerPage = auth_.permissions.isOwner || auth_.permissions.fakeAdmin;
       if ((needsOwner && !allowedOwnerPage) || (needsManager && !auth_.permissions.isManager)) {
         sendHtml(
@@ -1156,6 +1316,7 @@ people who were in the huddle.</p></div></body></html>`;
       if ('paused' in (body || {})) {
         store.setHuddleChannelFlag(channelId, 'paused_until', body.paused ? nowEpochSeconds() + PAUSE_SECONDS : 0);
       }
+      invalidateStats();
       sendJson(res, 200, { ok: true });
       return;
     }
@@ -1185,6 +1346,7 @@ people who were in the huddle.</p></div></body></html>`;
       // Narrow write: the whole-row upsert here would reset the name and every
       // toggle just because somebody added a manager.
       store.setHuddleChannelOwners(channelId, next);
+      invalidateStats();
       sendJson(res, 200, { ok: true, ownerIds: next });
       return;
     }
