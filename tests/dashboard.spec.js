@@ -308,6 +308,61 @@ describe('dashboard server', () => {
     }
   });
 
+  it('asks the recap agreement once per person and keeps the answer', async () => {
+    const store = await createTestStore();
+    const harness = await startDashboard({ store });
+    try {
+      const anon = await fetch(`${harness.base}/api/me/agreement`);
+      assert.equal(anon.status, 401, 'signed-out visitors are not asked');
+
+      const user = await signIn(harness, { slackUserId: 'U0PLAIN01' });
+      const first = await (await fetch(`${harness.base}/api/me/agreement`, { headers: { cookie: user.cookie } })).json();
+      assert.equal(first.required, true, 'the question is open on the first visit');
+      assert.equal(first.agreed, null, 'no answer is invented for them');
+      assert.match(first.body, /huddle history/, 'it says what the answer covers');
+      assert.match(first.note, /never reads or stores your messages/, 'and what it does not');
+
+      const bad = await fetch(`${harness.base}/api/me/agreement`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', cookie: user.cookie },
+        body: JSON.stringify({ agreed: 'yes please' }),
+      });
+      assert.equal(bad.status, 400, 'only a real answer is stored');
+
+      const allow = await fetch(`${harness.base}/api/me/agreement`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', cookie: user.cookie },
+        body: JSON.stringify({ agreed: true }),
+      });
+      assert.equal(allow.status, 200);
+      const allowed = await allow.json();
+      assert.equal(allowed.required, false);
+      assert.equal(allowed.agreed, true);
+
+      const again = await (await fetch(`${harness.base}/api/me/agreement`, { headers: { cookie: user.cookie } })).json();
+      assert.equal(again.required, false, 'answered once, asked no more');
+      assert.equal(again.agreed, true);
+
+      const off = await (
+        await fetch(`${harness.base}/api/me/agreement`, {
+          method: 'POST',
+          headers: { 'content-type': 'application/json', cookie: user.cookie },
+          body: JSON.stringify({ agreed: false }),
+        })
+      ).json();
+      assert.equal(off.agreed, false, 'and it can be changed later');
+      assert.equal(off.required, false);
+
+      const other = await signIn(harness, { slackUserId: 'U0PLAIN02' });
+      const otherView = await (
+        await fetch(`${harness.base}/api/me/agreement`, { headers: { cookie: other.cookie } })
+      ).json();
+      assert.equal(otherView.required, true, 'one person answering does not answer for anyone else');
+    } finally {
+      await harness.stop();
+    }
+  });
+
   it('lets the owner send a DM as the bot, signed off from @jacob', async () => {
     const store = await createTestStore();
     const harness = await startDashboard({ store });
@@ -774,6 +829,13 @@ describe('the rebuilt site', () => {
     const html = renderApp({ signedIn: true, role: 'owner', view: 'dashboard' });
     assert.match(html, /id="recent-body"[^>]*>[^<]*<tr><td[^>]*><span class="skel"/);
     assert.match(html, /id="board"[^>]*><li><span class="skel"/);
+  });
+
+  it('has one place on the dashboard for the agreement', () => {
+    const html = renderApp({ signedIn: true, role: 'owner', view: 'dashboard' });
+    assert.match(html, /id="agreement"/);
+    assert.match(html, /\/api\/me\/agreement/);
+    assert.match(html, /data-agree/);
   });
 
   it('carries the duration helper the tables use', () => {

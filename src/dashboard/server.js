@@ -6,6 +6,7 @@ import { describeHuddleChannels } from '../huddles/channels.js';
 import { createPermissions, isSlackUserId, parseOwnerIds } from '../permissions.js';
 import { buildStatusRss, readStatusEvents } from '../status/status-core.js';
 import { createDashboardAuth } from './auth.js';
+import { RECAP_AGREEMENT, RECAP_AGREEMENT_VERSION } from './agreement.js';
 import { createCachetDirectory } from './cachet.js';
 import { createFlaronDirectory } from './flaron.js';
 import { renderHuddlePage } from './huddle-page.js';
@@ -994,6 +995,40 @@ people who were in the huddle.</p></div></body></html>`;
           isLive: huddle.status === 'active' && !huddle.endedAt,
           url: `/${huddle.callId}`,
         })),
+      });
+      return;
+    }
+
+    if (route === '/api/me/agreement') {
+      if (!auth_) {
+        sendJson(res, 401, { error: 'Sign in first.' });
+        return;
+      }
+      const userId = auth_.session.slack_user_id;
+      if (method === 'POST') {
+        const body = await readJsonBody(req);
+        if (typeof body.agreed !== 'boolean') {
+          sendJson(res, 400, { error: 'agreed must be true or false' });
+          return;
+        }
+        store.setUserAgreement(userId, { version: RECAP_AGREEMENT_VERSION, agreed: body.agreed });
+      } else if (method !== 'GET') {
+        sendJson(res, 405, { error: 'Method not allowed' });
+        return;
+      }
+      const row = store.getUserAgreement(userId);
+      const decided = Boolean(row) && String(row.version || '') === RECAP_AGREEMENT_VERSION;
+      sendJson(res, 200, {
+        version: RECAP_AGREEMENT_VERSION,
+        // `required` is what the page keys off: until this version is answered
+        // the question is still open, and an answer to an older wording does
+        // not count.
+        required: !decided,
+        agreed: decided ? Number(row.agreed) === 1 : null,
+        decidedAt: decided ? String(row.updated_at || '') : null,
+        title: RECAP_AGREEMENT.title,
+        body: RECAP_AGREEMENT.body,
+        note: RECAP_AGREEMENT.note,
       });
       return;
     }
