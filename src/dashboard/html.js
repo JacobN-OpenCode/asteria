@@ -46,7 +46,7 @@ export function renderDashboardHtml({
 ${renderTabs(view, { isOwner: role === 'owner', isManager: role === 'manager', isAdminViewer })}
 
 <main>
-${view === 'home' ? homeView() : view === 'j-log' ? jLogView() : view === 'huddles' ? huddlesView() : view === 'recaps' ? recapsView() : view === 'users' ? usersView() : adminView()}
+${view === 'home' ? homeView() : view === 'j-log' ? jLogView() : view === 'huddles' ? huddlesListView() : view === 'channels' ? channelsView() : view === 'recaps' ? recapsView() : view === 'users' ? usersView() : view === 'messages' ? messagesView() : adminView()}
 </main>
 <div class="modal hidden" id="channel-modal" role="dialog" aria-modal="true" aria-labelledby="cm-title">
   <div class="modal-scrim" id="cm-scrim"></div>
@@ -112,8 +112,18 @@ ${view === 'home' ? homeView() : view === 'j-log' ? jLogView() : view === 'huddl
 
 <script>${SCRIPT}
 if (document.getElementById('about-modal')) {
-  if ('${view}' === 'j-log') { loadJLog(); wireJLog(); }
-  else if ('${view}' === 'huddles') { loadHuddles(); wireHuddles(); }
+  if ('${view}' === 'home') {
+    loadOverview();
+    loadLeaderboard();
+    loadChannelCards();
+    loadRecent();
+    setInterval(loadOverview, 10000);
+    setInterval(loadRecent, 30000);
+    setInterval(function () { loadLeaderboard(); loadChannelCards(); }, 60000);
+  }
+  else if ('${view}' === 'j-log') { loadJLog(); wireJLog(); }
+  else if ('${view}' === 'channels') { loadChannelsConfig(); wireChannels(); }
+  else if ('${view}' === 'huddles') { loadHuddlesList(); }
   else if ('${view}' === 'recaps') { loadRecaps(); }
   else if ('${view}' === 'admin') { loadAdmin(); }
   else if ('${view}' === 'users') { loadUsers(); }
@@ -141,6 +151,16 @@ function homeView() {
   </section>
 
   <div id="cold-start" class="hidden"></div>
+
+  <section class="panel">
+    <header class="panel-head"><h2>Recent huddles</h2><a class="panel-link" href="/huddles">All huddles</a></header>
+    <div class="table-wrap">
+      <table class="data" id="recent-table">
+        <thead><tr><th>When</th><th>Channel</th><th class="num">Length</th><th class="num">People</th><th class="num">Points</th><th></th></tr></thead>
+        <tbody id="recent-body"><tr><td colspan="6" class="empty-cell"><span class="skel" style="width:160px"></span></td></tr></tbody>
+      </table>
+    </div>
+  </section>
 
   <div class="grid" id="grid">
     <section class="panel leaderboard">
@@ -191,18 +211,20 @@ const TAB_ICONS = {
 
 const TABS = [
   { id: 'home', label: 'Dashboard' },
-  { id: 'j-log', label: 'Orbit Channels', owner: true },
-  { id: 'huddles', label: 'Orbit Huddles', manager: true },
-  { id: 'recaps', label: 'Orbit Recaps', manager: true },
-  { id: 'admin', label: 'Orbit Admin', owner: true },
-  { id: 'users', label: 'Orbit Users', owner: true },
-  { id: 'messages', label: 'Orbit Messages', owner: true },
+  { id: 'huddles', label: 'Huddles', manager: true },
+  { id: 'channels', label: 'Channels', manager: true },
+  { id: 'recaps', label: 'Recaps', manager: true },
+  { id: 'j-log', label: 'Daily update', owner: true },
+  { id: 'users', label: 'Users', owner: true },
+  { id: 'messages', label: 'Messages', owner: true },
+  { id: 'admin', label: 'Admin', owner: true },
 ];
 
 const VIEWS = {
   home: { title: 'live dashboard' },
   'j-log': { title: 'orbit channels' },
-  huddles: { title: 'orbit huddles' },
+  huddles: { title: 'huddles' },
+  channels: { title: 'channels' },
   recaps: { title: 'orbit recaps' },
   admin: { title: 'orbit admin' },
   users: { title: 'orbit users' },
@@ -236,8 +258,8 @@ ${tabs
 }
 
 function jLogView() {
-  return `  <section class="hero">
-    <p class="kicker">orbit channels</p>
+  return `  <section class="dash-head">
+    <p class="kicker">daily update</p>
     <h1>The daily <span class="accent">standup</span>, on rails.</h1>
     <p class="sub">Draft the update, set the question that goes out each morning, and check what has already
       been sent. Saving here changes what the bot posts; it does not post anything until you send it.</p>
@@ -330,9 +352,41 @@ function jLogView() {
   </div>`;
 }
 
-function huddlesView() {
-  return `  <section class="hero">
-    <p class="kicker">orbit huddles</p>
+function huddlesListView() {
+  return `  <section class="dash-head">
+    <p class="kicker">huddles</p>
+    <h1>Every huddle, in order.</h1>
+    <p class="sub">Most recent first. Live calls stay at the top of their own group, and each row opens the full
+      breakdown for that huddle.</p>
+  </section>
+
+  <div class="filters">
+    <label>Channel
+      <select id="huddle-channel"><option value="">All channels</option></select>
+    </label>
+    <label>Sort
+      <select id="huddle-sort">
+        <option value="recent">Most recent</option>
+        <option value="longest">Longest</option>
+        <option value="points">Most points</option>
+      </select>
+    </label>
+    <span class="muted" id="huddle-count"></span>
+  </div>
+
+  <section class="panel">
+    <div class="table-wrap">
+      <table class="data">
+        <thead><tr><th>When</th><th>Channel</th><th class="num">Length</th><th class="num">People</th><th class="num">Points</th><th></th></tr></thead>
+        <tbody id="huddle-body"><tr><td colspan="6" class="empty-cell"><span class="skel" style="width:200px"></span></td></tr></tbody>
+      </table>
+    </div>
+  </section>`;
+}
+
+function channelsView() {
+  return `  <section class="dash-head">
+    <p class="kicker">channels</p>
     <h1>How Orbit behaves, <span class="accent">per channel</span>.</h1>
     <p class="sub">Turn tracking off to stop the announcements, reviews and points for a channel without
       muting the bot itself, or restrict it so only the managers below can ask it something.</p>
@@ -436,8 +490,8 @@ function usersView() {
 }
 
 function adminView() {
-  return `  <section class="hero">
-    <p class="kicker">orbit admin</p>
+  return `  <section class="dash-head">
+    <p class="kicker">admin</p>
     <h1>What the bot can <span class="accent">actually see</span>.</h1>
     <p class="sub">Owner only. This is the honest state of the integration: which channels it is in, what
       Slack will not tell it, and the huddles it recorded but could never place.</p>
@@ -705,6 +759,32 @@ h1 .accent{color:var(--accent)}
   .log li{grid-template-columns:66px minmax(0,1fr)}
   .log .det{display:none}
 }
+/* ---------- data tables ---------- */
+.table-wrap{overflow-x:auto;margin:0 -4px}
+table.data{width:100%;border-collapse:collapse;font-size:13px}
+table.data th{text-align:left;font-size:9px;letter-spacing:.14em;text-transform:uppercase;color:var(--ink-3);
+  font-weight:700;padding:0 10px 9px;border-bottom:1px solid var(--hair);white-space:nowrap}
+table.data td{padding:11px 10px;border-bottom:1px solid var(--hair);vertical-align:middle;white-space:nowrap}
+table.data tr:last-child td{border-bottom:0}
+table.data tbody tr:hover td{background:var(--raised)}
+table.data .num{text-align:right;font-family:var(--mono);font-variant-numeric:tabular-nums;color:var(--ink-2)}
+table.data .when a{color:var(--ink)}
+table.data .chan{color:var(--ink-2);max-width:220px;overflow:hidden;text-overflow:ellipsis}
+table.data .act{text-align:right}
+.empty-cell{color:var(--ink-3);text-align:center;padding:30px 10px !important}
+.filters{display:flex;gap:14px;align-items:flex-end;flex-wrap:wrap;margin:0 0 16px}
+.filters label{display:grid;gap:5px;font-size:9px;letter-spacing:.13em;text-transform:uppercase;
+  color:var(--ink-3);font-weight:700}
+.filters select{background:var(--surface);color:var(--ink);border:1px solid var(--hair);border-radius:8px;
+  padding:8px 10px;font:inherit;font-size:13px;min-width:150px}
+.filters select:focus{outline:none;border-color:var(--accent)}
+.panel-link{font-size:12px;color:var(--accent-bright)}
+.btn.small{padding:5px 10px;font-size:11.5px;border-radius:7px}
+@media (max-width:640px){
+  table.data th:nth-child(3),table.data td:nth-child(3){display:none}
+  table.data td.chan{max-width:140px}
+}
+
 @media (prefers-reduced-motion:reduce){*{animation:none !important;transition:none !important}}
 /* inline text button, reads as a link but behaves as a button */
 .linkish{background:none;border:0;padding:0;font:inherit;color:var(--accent-bright);cursor:pointer;
@@ -1140,57 +1220,113 @@ function escapeHtml(value){
   return String(value ?? '').replace(/[&<>"']/g, (c) => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 }
 
-async function refresh(){
-  let data;
+async function apiJson(path){
   try {
-    const response = await fetch(base + '/api/stats', { headers: { accept: 'application/json' } });
-    if (!response.ok) return;
-    data = await response.json();
+    const response = await fetch(base + path, { headers: { accept: 'application/json' } });
+    if (response.status === 401) { window.location.href = '/login?next=%2Fdashboard'; return null; }
+    if (!response.ok) return null;
+    return await response.json();
   } catch (error) {
-    return;
+    return null;
   }
+}
+
+function fmtWhen(epoch){
+  const at = new Date((Number(epoch) || 0) * 1000);
+  const diff = Math.max(0, Date.now() - at.getTime());
+  const mins = Math.round(diff / 60000);
+  const label = mins < 1 ? 'just now' : mins < 60 ? mins + 'm ago' : mins < 2160 ? Math.round(mins / 60) + 'h ago' : at.toISOString().slice(0, 10);
+  return '<span title="' + at.toISOString().replace('T', ' ').slice(0, 16) + 'Z">' + label + '</span>';
+}
+
+function huddleRows(rows){
+  if (!rows || !rows.length) return '<tr><td colspan="6" class="empty-cell">No huddles yet.</td></tr>';
+  return rows.map(function (huddle) {
+    const length = fmtDuration(huddle.durationSeconds) + (huddle.isLive ? ' live' : '');
+    return '<tr>' +
+      '<td class="when"><a href="' + escapeHtml(huddle.url) + '">' + fmtWhen(huddle.startedAt) + '</a></td>' +
+      '<td class="chan">' + escapeHtml(huddle.channelName || huddle.channelId) + '</td>' +
+      '<td class="num">' + length + '</td>' +
+      '<td class="num">' + fmt.format(huddle.members) + '</td>' +
+      '<td class="num">' + (huddle.points ? fmt.format(huddle.points) : '&mdash;') + '</td>' +
+      '<td class="act"><a class="btn small" href="' + escapeHtml(huddle.url) + '">Open</a></td>' +
+    '</tr>';
+  }).join('');
+}
+
+async function loadOverview(){
+  const data = await apiJson('/api/overview');
+  if (!data) return;
   viewer = data.viewer;
-  if (data.teamId) teamId = data.teamId;
-  const h = data.huddles, u = data.uptime;
-
-  const boardTotal = data.leaderboard.reduce((total, row) => total + row.points, 0);
-
-  setValue('stat-active', fmt.format(h.active));
-  setValue('stat-24h', fmt.format(h.last24h));
-  setValue('stat-members', fmt.format(h.members));
-  setValue('stat-channels', fmt.format(data.botChannels.count));
-  setValue('stat-score', fmt.format(boardTotal));
-  $('uptime-pill').textContent = 'up ' + duration(u.seconds);
-  setField('kv-uptime', duration(u.seconds));
-  setField('kv-started', new Date(u.startedAt).toISOString().slice(0, 16).replace('T', ' ') + 'Z');
-  setField('kv-longest', h.longestSeconds ? duration(h.longestSeconds) : null, 'no huddles yet');
-  setField('kv-average', h.averageSeconds ? duration(h.averageSeconds) : null, 'no huddles yet');
-  setField('kv-optedout', fmt.format(h.optedOut));
+  setValue('stat-active', fmt.format(data.active));
+  setValue('stat-24h', fmt.format(data.ended24h));
+  setValue('stat-members', fmt.format(data.people));
+  setValue('stat-channels', fmt.format(data.channels));
+  setValue('stat-score', fmt.format(data.points));
+  $('uptime-pill').textContent = 'up ' + duration(data.uptime.seconds);
+  setField('kv-uptime', duration(data.uptime.seconds));
+  setField('kv-started', new Date(data.uptime.startedAt).toISOString().slice(0, 16).replace('T', ' ') + 'Z');
+  setField('kv-longest', data.longestSeconds ? duration(data.longestSeconds) : null, 'no huddles yet');
+  setField('kv-average', data.averageSeconds ? duration(data.averageSeconds) : null, 'no huddles yet');
+  setField('kv-optedout', fmt.format(data.optedOut));
   const stateTag = $('state-tag');
-  stateTag.textContent = u.state;
-  stateTag.classList.toggle('ok', u.state === 'ok' || u.state === 'operational');
+  stateTag.textContent = data.uptime.state;
+  stateTag.classList.toggle('ok', data.uptime.state === 'ok' || data.uptime.state === 'operational');
   $('foot-updated').textContent = 'updated ' + new Date(data.generatedAt).toISOString().slice(11, 19) + 'Z';
-
-  // Only the numbers above are on a timer. Re-drawing the lists every 5s is what
-  // made avatars flash and re-download, and nothing in them moves that fast, so
-  // the first paint owns them.
-  if (first) renderAll(data);
-
+  renderLog(data.logs || [], Boolean(viewer && viewer.isOwner));
   if (first) {
-    const bare = !h.total && !h.members && !data.botChannels.count;
-    if (bare) {
-      cold('Nothing here yet', 'Orbit has not seen a huddle, a person, or a channel. Invite it to a channel and this page fills itself in.');
-    }
+    const bare = !data.total && !data.people && !data.channels;
+    if (bare) cold('Nothing here yet', 'Orbit has not seen a huddle, a person, or a channel. Invite it to a channel and this page fills itself in.');
     first = false;
   }
 }
 
-function renderAll(data){
-  renderBoard(data.leaderboard, viewer);
+async function loadLeaderboard(){
+  const data = await apiJson('/api/leaderboard');
+  if (!data) return;
+  viewer = data.viewer;
+  renderBoard(data.rows, data.viewer);
   renderOptIn();
-  renderChannels(data.channels, data.botChannels.count);
-  renderLog(data.logs, Boolean(viewer && viewer.isOwner));
-  renderSparkline(data.leaderboard.slice(0, 12).map((row) => row.points));
+  renderSparkline(data.rows.slice(0, 12).map(function (row) { return row.points; }));
+}
+
+async function loadChannelCards(){
+  const data = await apiJson('/api/channels');
+  if (!data) return;
+  renderChannels(data.channels, data.channels.filter(function (channel) { return channel.inBot; }).length);
+}
+
+async function loadRecent(){
+  const data = await apiJson('/api/huddles?limit=8');
+  if (!data) return;
+  const body = $('recent-body');
+  if (body) body.innerHTML = huddleRows(data.huddles);
+}
+
+var huddleFiltersReady = false;
+
+async function loadHuddlesList(){
+  const sort = $('huddle-sort') ? $('huddle-sort').value : 'recent';
+  const channel = $('huddle-channel') ? $('huddle-channel').value : '';
+  let path = '/api/huddles?limit=60&sort=' + encodeURIComponent(sort);
+  if (channel) path += '&channel=' + encodeURIComponent(channel);
+  const data = await apiJson(path);
+  if (!data) return;
+  const body = $('huddle-body');
+  if (body) body.innerHTML = huddleRows(data.huddles);
+  setText('huddle-count', data.huddles.length + ' of ' + data.total);
+  if (!huddleFiltersReady && $('huddle-channel')) {
+    huddleFiltersReady = true;
+    $('huddle-sort').addEventListener('change', loadHuddlesList);
+    $('huddle-channel').addEventListener('change', loadHuddlesList);
+    const channels = await apiJson('/api/channels');
+    if (channels) {
+      $('huddle-channel').innerHTML = '<option value="">All channels</option>' +
+        channels.channels.map(function (item) {
+          return '<option value="' + escapeHtml(item.id) + '">' + escapeHtml(item.name) + '</option>';
+        }).join('');
+    }
+  }
 }
 
 // The channel list is re-rendered, so the open handler is delegated rather than
@@ -1435,7 +1571,7 @@ function availableChannelRow(c) {
   );
 }
 
-function loadHuddles() {
+function loadChannelsConfig() {
   fetch(base + '/api/huddles/config')
     .then((r) => r.json())
     .then((d) => {
@@ -1461,7 +1597,7 @@ function loadHuddles() {
     });
 }
 
-function wireHuddles() {
+function wireChannels() {
   $('hc-list').addEventListener('change', (event) => {
     const box = event.target.closest('input[data-flag]');
     if (!box) return;
@@ -1478,7 +1614,7 @@ function wireHuddles() {
     if (!btn) return;
     btn.disabled = true;
     post('/api/huddles/config', { channelId: btn.dataset.track, enabled: 1 })
-      .then(() => loadHuddles())
+      .then(() => loadChannelsConfig())
       .catch(() => {
         btn.disabled = false;
       });
@@ -1488,7 +1624,7 @@ function wireHuddles() {
     if (!btn) return;
     const row = btn.closest('.cardrow');
     post('/api/huddles/owners', { channelId: row.dataset.channel, remove: btn.dataset.removeOwner })
-      .then(() => loadHuddles())
+      .then(() => loadChannelsConfig())
       .catch(() => {});
   });
   $('hc-list').addEventListener('keydown', (event) => {
@@ -1499,7 +1635,7 @@ function wireHuddles() {
     if (!value) return;
     const row = input.closest('.cardrow');
     post('/api/huddles/owners', { channelId: row.dataset.channel, add: value })
-      .then(() => loadHuddles())
+      .then(() => loadChannelsConfig())
       .catch(() => {});
   });
 }

@@ -752,13 +752,14 @@ describe('dashboard markup', () => {
     assert.doesNotMatch(html, /whoCell\.children\[/, 'no positional lookups inside the name cell');
   });
 
-  it('polls only the status box and lets the first paint own the lists', () => {
-    const html = renderDashboardHtml({ signedIn: false, oauthConfigured: true });
-    assert.match(html, /if \(first\) renderAll\(data\);/, 'lists render once');
-    assert.match(html, /function renderAll\(data\)\{/, 'the list draw is its own function');
-    const statusOnly = html.slice(html.indexOf('async function refresh()'), html.indexOf('function renderAll(data)'));
-    assert.doesNotMatch(statusOnly, /renderBoard\(|renderChannels\(/, 'the 5s path never re-draws the lists');
-    assert.match(statusOnly, /setValue\('stat-active'/, 'it still updates the numbers');
+  it('loads the dashboard sections independently', () => {
+    const html = renderDashboardHtml({ signedIn: true, role: 'owner' });
+    for (const endpoint of ['/api/overview', '/api/leaderboard', '/api/channels', '/api/huddles?limit=8']) {
+      assert(html.includes(endpoint), `the shell asks for ${endpoint} separately`);
+    }
+    assert.match(html, /setInterval\(loadOverview, 10000\)/, 'only the cheap overview polls quickly');
+    assert.match(html, /function loadHuddlesList\(/, 'the huddle list has its own loader');
+    assert.match(html, /function huddleRows\(/, 'one table renderer is shared');
   });
 
   it('formats huddle lengths for the popup', () => {

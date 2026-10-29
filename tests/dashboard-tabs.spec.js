@@ -78,9 +78,13 @@ describe('tabbed pages', () => {
 
   it('serves each tab to the owner with the tab marked current', async () => {
     for (const [route, label] of [
-      ['/j-log', 'Orbit Channels'],
-      ['/huddles', 'Orbit Huddles'],
-      ['/admin', 'Orbit Admin'],
+      ['/j-log', 'Daily update'],
+      ['/huddles', 'Huddles'],
+      ['/channels', 'Channels'],
+      ['/recaps', 'Recaps'],
+      ['/admin', 'Admin'],
+      ['/users', 'Users'],
+      ['/messages', 'Messages'],
     ]) {
       const html = await (await get(route, ownerCookie)).text();
       assert(html.includes(label), `${route} shows its tab`);
@@ -185,12 +189,13 @@ describe('tabbed pages', () => {
   });
 
   it('hides the owner tabs and pages from a manager', async () => {
-    const html = await (await get('/huddles', managerCookie)).text();
-    assert(html.includes('Orbit Huddles'));
-    assert(!html.includes('Orbit Channels'), 'no channels tab for a manager');
-    assert(!html.includes('Orbit Admin'), 'no admin tab');
+    const html = await (await get('/channels', managerCookie)).text();
+    assert(html.includes('href="/channels"'), 'the channels tab is there');
+    assert(html.includes('href="/huddles"'), 'and the huddles tab');
+    assert(!html.includes('href="/j-log"'), 'no daily update tab for a manager');
+    assert(!html.includes('href="/admin"'), 'no admin tab');
 
-    for (const route of ['/j-log', '/admin']) {
+    for (const route of ['/j-log', '/admin', '/users', '/messages']) {
       assert.equal((await get(route, managerCookie)).status, 403, `${route} is owner only`);
     }
   });
@@ -256,7 +261,7 @@ describe('tabbed pages', () => {
 
     // Looks like the owner from the outside.
     const page = await (await get('/admin', fakeCookie)).text();
-    assert(page.includes('Orbit Admin'), 'the admin tab is there');
+    assert(page.includes('href="/admin"'), 'the admin tab is there');
     assert(page.includes('>owner<'), 'and the role pill says owner');
     assert.equal((await get('/users', fakeCookie)).status, 200, 'the users tab opens');
     assert.equal((await get('/j-log', fakeCookie)).status, 200, 'and the channels tab');
@@ -319,9 +324,9 @@ describe('tabbed pages', () => {
     assert.equal((await get('/api/admin/users', userCookie)).status, 403);
   });
 
-  it('renames the channel manager tab to Orbit Channels', async () => {
+  it('names the daily update tab in plain language', async () => {
     const html = await (await get('/j-log', ownerCookie)).text();
-    assert(html.includes('Orbit Channels'));
+    assert(html.includes('Daily update'));
     assert(!html.includes('j-log manager'), 'the old label is gone');
   });
 

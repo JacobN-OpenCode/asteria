@@ -1,6 +1,6 @@
 const FLARON_BASE = 'https://flaron.halceon.dev';
 const CACHE_MS = 60 * 60 * 1000;
-const REQUEST_TIMEOUT_MS = 4000;
+const REQUEST_TIMEOUT_MS = 2500;
 
 /**
  * Flaron is Hack Club's Slack data cache and the source for the things Slack's
@@ -64,7 +64,11 @@ export function createFlaronDirectory({
             break;
           }
           if (body?.error) {
+            // A private or unknown channel is a real answer, not a failed call.
+            // Trying the short form as well only doubles the latency for the
+            // channels that were never going to resolve.
             logger.info?.(`[flaron] ${channelId} -> ${body.error}`);
+            break;
           }
         } catch (error) {
           logger.warn?.(`[flaron] ${channelId} lookup failed: ${error.message}`);
