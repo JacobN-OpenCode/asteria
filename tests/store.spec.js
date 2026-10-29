@@ -176,6 +176,43 @@ describe('Orbit store', () => {
     store.close();
   });
 
+  it('replaces a huddle award and moves the totals by the difference', async () => {
+    const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'asteria-store-'));
+    const databasePath = path.join(tempDir, 'asteria.sqlite');
+    createdPaths.push(databasePath);
+    const store = await createStore(databasePath);
+
+    store.awardHuddlePoints('U1', 100, 'C1');
+    store.awardHuddlePoints('U2', 50, 'C1');
+    store.saveHuddleAwards(
+      'R1',
+      'C1',
+      new Map([
+        ['U1', { points: 100, reasons: ['100m'] }],
+        ['U2', { points: 50, reasons: ['50m'] }],
+      ]),
+    );
+
+    const result = store.replaceHuddleAwards(
+      'R1',
+      'C1',
+      new Map([
+        ['U1', { points: 140, reasons: ['140m'] }],
+        ['U3', { points: 30, reasons: ['30m'] }],
+      ]),
+    );
+    assert.equal(result.total, 170);
+    assert.equal(result.users, 2);
+    const lifetime = Object.fromEntries(store.listHuddleLeaderboard().map((row) => [row.user_id, row.points]));
+    const scoped = Object.fromEntries(store.listHuddleLeaderboard(10, ['C1']).map((row) => [row.user_id, row.points]));
+    assert.equal(lifetime.U1, 140, 'the increase is applied');
+    assert.equal(lifetime.U3, 30, 'a new person is added');
+    assert.equal(lifetime.U2, 0, 'the removed person loses their points, never goes negative');
+    assert.equal(scoped.U1, 140, 'the channel copy moves too');
+    assert.equal(store.listHuddleAwards('R1').length, 2, 'the rows are replaced');
+    store.close();
+  });
+
   it('clears closed huddles that were never in a channel', async () => {
     const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'asteria-store-'));
     const databasePath = path.join(tempDir, 'asteria.sqlite');

@@ -2033,6 +2033,67 @@ export async function createStore(databasePath, options = {}) {
      * can be re-tracked with the track-again button and the second pass may award
      * a different total. Passing the whole Map makes the write idempotent.
      */
+    /**
+     * Move one person's totals by delta, including negative. `awardHuddlePoints`
+     * clamps at zero by design because it only ever adds, so correcting an
+     * already-awarded huddle needs this.
+     */
+    adjustHuddlePoints(userId, delta, channelId = '') {
+      const change = Math.floor(Number(delta) || 0);
+      if (!userId || change === 0) {
+        return false;
+      }
+      bindAndRun(
+        database,
+        `
+        INSERT INTO huddle_leaderboard (user_id, points, updated_at)
+        VALUES ($user_id, MAX(0, $delta), CURRENT_TIMESTAMP)
+        ON CONFLICT(user_id) DO UPDATE SET
+          points = MAX(0, huddle_leaderboard.points + $delta),
+          updated_at = CURRENT_TIMESTAMP
+      `,
+        { $user_id: userId, $delta: change },
+      );
+      if (channelId) {
+        bindAndRun(
+          database,
+          `
+          INSERT INTO huddle_channel_points (channel_id, user_id, points, updated_at)
+          VALUES ($channel_id, $user_id, MAX(0, $delta), CURRENT_TIMESTAMP)
+          ON CONFLICT(channel_id, user_id) DO UPDATE SET
+            points = MAX(0, huddle_channel_points.points + $delta),
+            updated_at = CURRENT_TIMESTAMP
+        `,
+          { $channel_id: channelId, $user_id: userId, $delta: change },
+        );
+      }
+      persist();
+      return true;
+    },
+
+    /**
+     * Replace a huddle's award rows and move the leaderboard by the difference.
+     * Used when a huddle was scored from bad data and has to be rescored.
+     */
+    replaceHuddleAwards(callId, channelId, awards) {
+      const next = awards instanceof Map ? awards : new Map(Object.entries(awards || {}));
+      const previous = new Map(
+        this.listHuddleAwards(callId).map((row) => [row.userId ?? row.user_id, Number(row.points) || 0]),
+      );
+      const users = new Set([...previous.keys(), ...next.keys()]);
+      for (const userId of users) {
+        const delta = (next.get(userId)?.points || 0) - (previous.get(userId) || 0);
+        if (delta) {
+          this.adjustHuddlePoints(userId, delta, channelId);
+        }
+      }
+      this.saveHuddleAwards(callId, channelId, next);
+      return {
+        users: next.size,
+        total: [...next.values()].reduce((sum, entry) => sum + (Number(entry.points) || 0), 0),
+      };
+    },
+
     saveHuddleAwards(callId, channelId, awards) {
       const huddleId = String(callId || '');
       if (!huddleId) {
