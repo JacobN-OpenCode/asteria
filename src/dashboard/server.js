@@ -89,9 +89,7 @@ export function createDashboardServer({
     // The SQL already drops anyone who opted out of the board.
     const rows = store.listHuddleLeaderboard(25, scope);
     const profiles = cachet && rows.length ? await cachet.list(rows.map((row) => row.user_id)).catch(() => ({})) : {};
-    const managers = new Set(
-      store.listHuddleChannels().flatMap((channel) => parseOwnerIds(channel.owner_ids)),
-    );
+    const managers = new Set(store.listHuddleChannels().flatMap((channel) => parseOwnerIds(channel.owner_ids)));
     return rows.map((row, index) => {
       const profile = profiles[row.user_id] || {};
       return {
@@ -945,6 +943,25 @@ people who were in the huddle.</p></div></body></html>`;
         return;
       }
       const channelIds = await botChannels.list();
+      // A private channel's huddles are only for its members, its manager and
+      // the owner. Public channels are workspace-wide.
+      const isOwner = auth_.permissions.isOwner;
+      const managed = new Set(
+        Array.isArray(auth_.permissions.managedChannelIds) ? auth_.permissions.managedChannelIds : [],
+      );
+      const visibleChannelIds = [];
+      for (const id of channelIds) {
+        const row = store.getHuddleChannel(id);
+        const isPrivate = row ? Number(row.is_private) !== 0 : false;
+        if (!isPrivate || isOwner || managed.has(id)) {
+          visibleChannelIds.push(id);
+        } else if (
+          typeof slack.isMember === 'function' &&
+          (await slack.isMember(id, auth_.session.slack_user_id).catch(() => false))
+        ) {
+          visibleChannelIds.push(id);
+        }
+      }
       const limit = Math.max(1, Math.min(100, Number(url.searchParams.get('limit')) || 40));
       const offset = Math.max(0, Number(url.searchParams.get('offset')) || 0);
       const sort = String(url.searchParams.get('sort') || 'recent');
@@ -953,12 +970,15 @@ people who were in the huddle.</p></div></body></html>`;
         limit,
         offset,
         channelId,
-        channelIds,
+        channelIds: visibleChannelIds,
         sort,
       });
-      const names = channelIds.length ? await botChannels.names(channelIds) : {};
+      const names =
+        visibleChannelIds.length && typeof botChannels.names === 'function'
+          ? await botChannels.names(visibleChannelIds).catch(() => ({}))
+          : {};
       const now = Math.floor(Date.now() / 1000);
-      const scoped = huddles.filter((huddle) => channelIds.includes(huddle.channelId));
+      const scoped = huddles.filter((huddle) => visibleChannelIds.includes(huddle.channelId));
       const channels = [...new Set(scoped.map((huddle) => huddle.channelId))].map((id) => ({
         id,
         name: names[id] || id,
@@ -1074,8 +1094,7 @@ people who were in the huddle.</p></div></body></html>`;
     if (route === '/api/recaps' && method === 'GET') {
       const channelId = String(url.searchParams.get('channelId') || '');
       const canView =
-        isAdminViewer(auth_) ||
-        (auth_ && permissions.mayConfigureChannel(auth_.session.slack_user_id, channelId));
+        isAdminViewer(auth_) || (auth_ && permissions.mayConfigureChannel(auth_.session.slack_user_id, channelId));
       if (!canView) {
         sendJson(res, 403, { error: 'Not your channel' });
         return;
@@ -1171,9 +1190,7 @@ people who were in the huddle.</p></div></body></html>`;
           channel,
           viewer: auth_.permissions,
           submissions,
-          error: allowed
-            ? ''
-            : `You can submit once you have joined a huddle in #${channel.name} at least once.`,
+          error: allowed ? '' : `You can submit once you have joined a huddle in #${channel.name} at least once.`,
         }),
       );
       return;
