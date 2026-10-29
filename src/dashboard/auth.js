@@ -3,6 +3,14 @@ import { ensureDirectMessageChannel } from '../services/slack.js';
 
 const CODE_TTL_MS = 10 * 60 * 1000;
 const CODE_LENGTH = 6;
+// A six digit code with an unlimited number of guesses is not a code. Five wrong
+// attempts burns it; the person just asks for another one.
+const MAX_VERIFY_ATTEMPTS = 5;
+// Per member, not per IP: the bot only ever DMs one person at a time, and this
+// stops the endpoint being used as a DM cannon against a single account.
+const CODE_REQUESTS_PER_WINDOW = 5;
+const CODE_WINDOW_MS = 10 * 60 * 1000;
+const SESSION_MAX_AGE_MS = 30 * 24 * 60 * 60 * 1000;
 
 // Anything the visitor can act on. The status code travels with the error so
 // the route can answer 400 with the sentence instead of 500 with a shrug.
@@ -17,6 +25,7 @@ class UserFacingError extends Error {
 export function createDashboardAuth({ client, store, logger = console, slackClientId = '', slackClientSecret = '' }) {
   const oauthConfigured = Boolean(slackClientId && slackClientSecret);
   const codes = new Map();
+  const codeRequests = new Map();
 
   function randomToken(bytes = 32) {
     return crypto.randomBytes(bytes).toString('base64url');
@@ -144,8 +153,21 @@ export function createDashboardAuth({ client, store, logger = console, slackClie
     if (!/^[UW][A-Z0-9]{7,}$/.test(String(slackUserId || ''))) {
       throw new UserFacingError('That does not look like a Slack member ID. It starts with U or W, like U0123456789.');
     }
+    const now = Date.now();
+    // Drop expired codes on the way past, so the map cannot grow forever.
+    for (const [id, pending] of codes) {
+      if (now - pending.createdAt > CODE_TTL_MS) {
+        codes.delete(id);
+      }
+    }
+    const recent = (codeRequests.get(slackUserId) || []).filter((at) => now - at < CODE_WINDOW_MS);
+    if (recent.length >= CODE_REQUESTS_PER_WINDOW) {
+      throw new UserFacingError('Too many sign-in codes for that account. Try again in a few minutes.', 429);
+    }
+    recent.push(now);
+    codeRequests.set(slackUserId, recent);
     const code = String(crypto.randomInt(0, 10 ** CODE_LENGTH)).padStart(CODE_LENGTH, '0');
-    codes.set(slackUserId, { code, createdAt: Date.now() });
+    codes.set(slackUserId, { code, createdAt: now, attempts: 0 });
     let channelId;
     try {
       // conversations.open wants `users`, not `user`. Passing `user` came back
@@ -192,7 +214,16 @@ export function createDashboardAuth({ client, store, logger = console, slackClie
       codes.delete(slackUserId);
       return { ok: false, error: 'That code expired. Request a new one.' };
     }
+    if (Number(pending.attempts) >= MAX_VERIFY_ATTEMPTS) {
+      codes.delete(slackUserId);
+      return { ok: false, error: 'Too many attempts. Ask for a new code.' };
+    }
     if (pending.code !== String(code || '').trim()) {
+      pending.attempts = (Number(pending.attempts) || 0) + 1;
+      if (pending.attempts >= MAX_VERIFY_ATTEMPTS) {
+        codes.delete(slackUserId);
+        return { ok: false, error: 'Too many attempts. Ask for a new code.' };
+      }
       return { ok: false, error: 'That code is not right.' };
     }
     codes.delete(slackUserId);
@@ -250,6 +281,11 @@ export function createDashboardAuth({ client, store, logger = console, slackClie
   function sessionFromToken(token) {
     const session = store.getDashboardSession(token);
     if (!session) {
+      return null;
+    }
+    const created = Date.parse(String(session.created_at || '').replace(' ', 'T') + 'Z');
+    if (Number.isFinite(created) && Date.now() - created > SESSION_MAX_AGE_MS) {
+      store.deleteDashboardSession(token);
       return null;
     }
     store.touchDashboardSession(token);

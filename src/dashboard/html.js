@@ -1573,7 +1573,7 @@ function loadRecaps() {
       setText('recap-tag', channels.length + ' channels');
       $('recap-list').innerHTML = channels.length
         ? channels.map((channel) => {
-            const slug = slugifyChannel(channel.name || channel.channelId);
+            const slug = slugifyChannel(channel.name || channel.channelId) || channel.channelId;
             return '<div class="cardrow" data-channel="' + escapeHtml(channel.channelId) + '">' +
               '<div class="hd"><div class="nm"><span>' + escapeHtml(channel.name || channel.channelId) + '</span>' +
                 '<span class="tag">' + (channel.recapCount || 0) + ' recaps</span></div>' +
