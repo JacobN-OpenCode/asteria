@@ -8,10 +8,9 @@ import { buildStatusRss, readStatusEvents } from '../status/status-core.js';
 import { createDashboardAuth } from './auth.js';
 import { createCachetDirectory } from './cachet.js';
 import { createFlaronDirectory } from './flaron.js';
-import { renderDashboardHtml } from './html.js';
 import { renderHuddlePage } from './huddle-page.js';
 import { resolvePermissions } from './permissions.js';
-import { renderLandingPage } from './landing.js';
+import { renderApp, renderLanding } from './site.js';
 import { isLegacyHost, renderRebrandPage } from './rebrand.js';
 import { channelSlug, parseRecapLink, renderRecapPage } from './recap.js';
 import { buildDashboardStats } from './stats.js';
@@ -21,7 +20,7 @@ const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../
 const SESSION_COOKIE = 'asteria_session';
 const SESSION_MAX_AGE_SECONDS = 60 * 60 * 24 * 30;
 const PAGES = {
-  '/dashboard': 'home',
+  '/dashboard': 'dashboard',
   '/j-log': 'j-log',
   '/huddles': 'huddles',
   '/channels': 'channels',
@@ -752,7 +751,7 @@ people who were in the huddle.</p></div></body></html>`;
       const expected = cookies.asteria_oauth_state;
       const expectedNonce = cookies.asteria_oauth_nonce || '';
       if (!expected || state !== expected) {
-        sendHtml(res, 400, renderDashboardHtml({ signedIn: false, baseUrl: auth.publicUrl(req) }));
+        sendHtml(res, 400, renderLanding({ signedIn: Boolean(readSession(req)) }));
         return;
       }
       try {
@@ -1087,7 +1086,7 @@ people who were in the huddle.</p></div></body></html>`;
     }
 
     if (route === '/' && method === 'GET') {
-      sendHtml(res, 200, renderLandingPage({ signedIn: Boolean(auth_) }));
+      sendHtml(res, 200, renderLanding({ signedIn: Boolean(auth_) }));
       return;
     }
 
@@ -1211,7 +1210,7 @@ people who were in the huddle.</p></div></body></html>`;
         sendHtml(
           res,
           403,
-          renderDashboardHtml({
+          renderApp({
             oauthConfigured: auth.oauthConfigured,
             signedIn: true,
             role: auth_.permissions.role,
@@ -1226,7 +1225,7 @@ people who were in the huddle.</p></div></body></html>`;
       sendHtml(
         res,
         200,
-        renderDashboardHtml({
+        renderApp({
           oauthConfigured: auth.oauthConfigured,
           signedIn: true,
           role: auth_.permissions.role,

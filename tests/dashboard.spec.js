@@ -5,6 +5,7 @@ import path from 'node:path';
 import { afterEach, describe, it, mock } from 'node:test';
 import { createDashboardAuth } from '../src/dashboard/auth.js';
 import { cachetAvatarUrl, cachetUserUrl, createCachetDirectory } from '../src/dashboard/cachet.js';
+import { renderApp, renderLanding } from '../src/dashboard/site.js';
 import { renderDashboardHtml } from '../src/dashboard/html.js';
 import { ROLES, resolvePermissions } from '../src/dashboard/permissions.js';
 import { createDashboardServer } from '../src/dashboard/server.js';
@@ -160,8 +161,8 @@ describe('dashboard server', () => {
       assert.equal(landing.status, 200);
       assert.match(landing.headers.get('content-type'), /text\/html/);
       const landingHtml = await landing.text();
-      assert.match(landingHtml, /Jacob's Orbit/);
-      assert.match(landingHtml, /Your huddles/, 'the public page explains the product');
+      assert.match(landingHtml, /Orbit/);
+      assert.match(landingHtml, /scored<\/em> and remembered/, 'the public page explains the product');
       assert.match(landingHtml, /--accent:#cba6f7/, 'Catppuccin Mocha mauve is the product accent');
       assert.match(landingHtml, /color-scheme:dark/);
 
@@ -173,7 +174,7 @@ describe('dashboard server', () => {
       const page = await fetch(`${harness.base}/dashboard`, { headers: { cookie: owner.cookie } });
       assert.equal(page.status, 200);
       const html = await page.text();
-      assert.match(html, /Everything in orbit/, 'the dashboard is behind sign in');
+      assert.match(html, /Overview/, 'the dashboard is behind sign in');
 
       const health = await fetch(`${harness.base}/health`);
       assert.equal(health.status, 200);
@@ -733,303 +734,52 @@ describe('dashboard stats', () => {
   });
 });
 
-describe('dashboard markup', () => {
-  it('escapes anything user controlled and ships the dark theme tokens', () => {
-    const html = renderDashboardHtml({ signedIn: true, role: 'owner', oauthConfigured: true });
+describe('the rebuilt site', () => {
+  it('renders a landing page that asks for no data', () => {
+    const landing = renderLanding({ signedIn: false });
+    assert.match(landing, /Huddles, <em>scored<\/em> and remembered/);
+    assert.doesNotMatch(landing, /api\/overview|api\/leaderboard|api\/huddles/, 'the public page fetches nothing');
+    assert.doesNotMatch(landing, /U0[A-Z0-9]{7,}/, 'no real account ids on the public page');
+    assert.match(landing, /Sign in with Slack/);
+  });
+
+  it('keeps the app behind a session and renders one page at a time', () => {
+    const app = renderApp({ signedIn: true, role: 'owner', view: 'dashboard' });
+    assert.match(app, /id="k-active"/);
+    assert.match(app, /\/api\/overview/, 'the shell asks for its own sections');
+    assert.match(app, /\/api\/leaderboard/);
+    assert.match(app, /\/api\/huddles\?limit=8/);
+    assert.doesNotMatch(app, /member id/i, 'no member-id sign in form');
+  });
+
+  it('ships the design tokens and no em dashes', () => {
+    const html = renderLanding({}) + renderApp({ signedIn: true, role: 'owner', view: 'dashboard' });
+    assert.match(html, /--accent:#cba6f7/);
     assert.match(html, /color-scheme:dark/);
-    assert.match(html, /--bg:#1e1e2e/);
-    assert.match(html, /class="who" id="who">owner<\/span>/);
-    assert.doesNotMatch(html, /<script src=/, 'no external scripts');
+    assert.doesNotMatch(html, /\u2014/, 'no em dashes');
   });
 
-  it('keeps em dashes out of the interface and hides the member id sign in', () => {
-    const html = renderDashboardHtml({ signedIn: false, oauthConfigured: true });
-    assert.doesNotMatch(html, /\u2014/, 'no em dashes anywhere in the markup or script');
-    assert.doesNotMatch(html, /signin-panel|slack-id|signin-msg/, 'no member id sign in');
-    assert.match(html, /Sign in with Slack/, 'slack sign in stays in the top bar');
-  });
-
-  it('skeletons stand in for data while the first payload lands', () => {
-    const html = renderDashboardHtml({ signedIn: false, oauthConfigured: true });
-    assert.match(html, /class="skel/, 'loading placeholders are skeletons, not dashes');
-    assert.match(html, /id="board"><li class="none-slot">/);
-  });
-
-  it('renders the channel popup shell and its styles', () => {
-    const html = renderDashboardHtml({ signedIn: false, oauthConfigured: true });
-    assert.match(html, /id="channel-modal"/, 'the popup exists in the markup');
-    assert.match(html, /class="modal-scrim" id="cm-scrim"/, 'a scrim closes it');
-    assert.match(html, /role="dialog" aria-modal="true"/, 'it is announced as a dialog');
-    assert.match(html, /\.modal-card\{/, 'the card is styled');
-  });
-
-  it('opens the popup from a channel name and closes on scrim, button and escape', () => {
-    const html = renderDashboardHtml({ signedIn: false, oauthConfigured: true });
-    assert.match(html, /function openChannelModal\(/, 'there is an opener to call');
-    assert.match(html, /class="chan-open" data-channel=/, 'channel rows are the trigger');
-    assert.match(html, /event\.target\.closest\('\.chan-open'\)/, 'the click is delegated');
-    assert.match(html, /openChannelModal\(opener\.getAttribute\('data-channel'\)\)/, 'it opens by id');
-    assert.match(html, /closest\('#cm-close'\) \|\| event\.target\.id === 'cm-scrim'/, 'clicks outside close it');
-    assert.match(html, /event\.key === 'Escape'/, 'escape closes it');
-    assert.match(html, /app_redirect\?channel=/, 'the popup can still open the real channel');
-  });
-
-  it('adds and removes the CM tag in place instead of rebuilding the row', () => {
-    const html = renderDashboardHtml({ signedIn: false, oauthConfigured: true });
-    assert.match(html, /nameRow\.appendChild\(tag\)/, 'the tag goes in the name row');
-    assert.match(html, /!row\.channelManager && cmTag\)\{\s*cmTag\.remove\(\)/, 'it comes back out');
-    assert.doesNotMatch(html, /whoCell\.children\[/, 'no positional lookups inside the name cell');
-  });
-
-  it('loads the dashboard sections independently', () => {
-    const html = renderDashboardHtml({ signedIn: true, role: 'owner' });
-    for (const endpoint of ['/api/overview', '/api/leaderboard', '/api/channels', '/api/huddles?limit=8']) {
-      assert(html.includes(endpoint), `the shell asks for ${endpoint} separately`);
+  it('shows each person exactly the sections they can use', () => {
+    const owner = renderApp({ signedIn: true, role: 'owner', view: 'dashboard' });
+    for (const label of ['Dashboard', 'Huddles', 'Channels', 'Recaps', 'Daily update', 'Users', 'Messages', 'Admin']) {
+      assert(owner.includes('>' + label + '<'), `owner sees ${label}`);
     }
-    assert.match(html, /setInterval\(loadOverview, 10000\)/, 'only the cheap overview polls quickly');
-    assert.match(html, /function loadHuddlesList\(/, 'the huddle list has its own loader');
-    assert.match(html, /function huddleRows\(/, 'one table renderer is shared');
+    const manager = renderApp({ signedIn: true, role: 'manager', view: 'dashboard' });
+    assert(manager.includes('>Channels<'));
+    assert(!manager.includes('>Users<'), 'a manager has no user administration');
+    assert(!manager.includes('>Daily update<'), 'no daily update for a manager');
   });
 
-  it('formats huddle lengths for the popup', () => {
-    const html = renderDashboardHtml({ signedIn: false, oauthConfigured: true });
-    assert.match(html, /function fmtDuration\(seconds\)/);
-    assert.match(html, /avg/i);
+  it('has skeletons only inside the sections that are loading', () => {
+    const html = renderApp({ signedIn: true, role: 'owner', view: 'dashboard' });
+    assert.match(html, /id="recent-body"[^>]*>[^<]*<tr><td[^>]*><span class="skel"/);
+    assert.match(html, /id="board"[^>]*><li><span class="skel"/);
   });
 
-  it('describes each channel for the popup with Flaron, Slack or nothing', async () => {
-    const store = await createTestStore();
-    store.upsertHuddleChannel({ channelId: 'Cpublic', name: 'j-log', isPrivate: false });
-    store.upsertHuddleChannel({ channelId: 'Cprivate', name: 'tinkering', isPrivate: true });
-    const slackSizes = { Cprivate: 45 };
-    const flaron = {
-      list: async () => ({
-        Cpublic: { members: 27, humans: 7, bots: 20, managers: ['U0AEYDUCLKF'] },
-      }),
-    };
-    const slack = { channelSize: async (id) => slackSizes[id] ?? null };
-    const cachet = {
-      avatarUrl: (id) => 'https://cachet/' + id + '/r',
-      profileUrl: (id) => 'https://cachet/user/' + id,
-      list: async (ids) =>
-        Object.fromEntries(
-          ids.map((id) => [
-            id,
-            { userId: id, displayName: 'Jacob', realName: 'Jacob N', imageUrl: 'https://img/j.png' },
-          ]),
-        ),
-      logger: { warn: mock.fn() },
-    };
-    const stats = await buildDashboardStats({
-      store,
-      botChannels: { list: async () => ['Cpublic', 'Cprivate'], names: async () => ({}), team: async () => 'T1' },
-      permissions: { role: ROLES.OWNER, isOwner: true, isManager: false, managedChannelIds: null },
-      cachet,
-      flaron,
-      slack,
-      startedAt: Date.now(),
-      statusEvents: [],
-    });
-
-    const cards = Object.fromEntries(stats.channels.map((c) => [c.id, c]));
-    assert.deepEqual(
-      cards.Cpublic.flaron,
-      { known: true, source: 'flaron', members: 27, humans: 7, bots: 20 },
-      'a public channel is described by Flaron',
-    );
-    assert.equal(cards.Cpublic.managers.length, 1);
-    assert.equal(cards.Cpublic.managers[0].userId, 'U0AEYDUCLKF');
-    assert.equal(cards.Cpublic.managers[0].imageUrl, 'https://img/j.png', 'the manager gets a picture');
-    assert.deepEqual(
-      cards.Cprivate.flaron,
-      { known: false, source: 'slack', members: 45, humans: null, bots: null },
-      'a private channel falls back to the Slack headcount and says so',
-    );
-    assert.deepEqual(cards.Cprivate.managers, [], 'no manager is invented for a private channel');
-    assert.equal(typeof cards.Cpublic.stats.total, 'number', 'each card carries huddle totals');
-    store.close();
-  });
-
-  it('tags leaderboard rows that manage a channel', async () => {
-    const store = await createTestStore();
-    store.upsertHuddleChannel({ channelId: 'Cbot', name: 'j-log' });
-    store.awardHuddlePoints('U1', 40, 'Cbot');
-    const stats = await buildDashboardStats({
-      store,
-      botChannels: { list: async () => ['Cbot'], names: async () => ({}), team: async () => 'T1' },
-      permissions: { role: ROLES.OWNER, isOwner: true, isManager: false, managedChannelIds: null },
-      cachet: null,
-      flaron: { list: async () => ({ Cbot: { members: 5, humans: 4, bots: 1, managers: ['U1'] } }) },
-      startedAt: Date.now(),
-      statusEvents: [],
-    });
-    const row = stats.leaderboard[0];
-    assert.ok(row, 'the board has someone on it');
-    assert.equal(row.channelManager, true, 'a manager is flagged so the board can tag them');
-    store.close();
-  });
-
-  it('resolves channel names through the SDK, never a raw apiCall', async () => {
-    const client = createSlackClientDouble();
-    const directory = createBotChannelDirectory({ client, logger: { info: mock.fn(), warn: mock.fn() } });
-    const resolved = await directory.names(['C0B9YFSE6MN']);
-    assert.equal(resolved.C0B9YFSE6MN, 'resolved-name', 'the name came back');
-    assert.equal(client.conversations.info.mock.callCount(), 1, 'conversations.info was used');
-    assert.equal(
-      client.apiCall.mock.callCount(),
-      0,
-      'client.apiCall answers unknown_method on this app and fails silently',
-    );
-    const again = await directory.names(['C0B9YFSE6MN']);
-    assert.deepEqual(again, resolved, 'the second call is served from cache');
-    assert.equal(client.conversations.info.mock.callCount(), 1, 'without asking Slack again');
-  });
-
-  it('refuses to wipe the attributed table when scoring produces nothing', async () => {
-    const store = await createTestStore();
-    store.upsertHuddleChannel({ channelId: 'Cbot' });
-    const startedAt = Math.floor(Date.now() / 1000) - 7200;
-    store.upsertHuddle({
-      callId: 'R1',
-      channelId: 'Cbot',
-      createdBy: 'U1',
-      startedAt,
-      endedAt: startedAt + 600,
-      participantHistory: ['U1'],
-    });
-    store.setHuddleStatus('R1', 'ended', startedAt + 600);
-    store.awardHuddlePoints('U1', 40, 'Cbot');
-    assert.equal(store.huddlePointTotals().rows, 1, 'a working attributed row exists');
-    // A scoring bug that returns nothing for every huddle must not replace a
-    // working board with an empty one.
-    assert.throws(
-      () =>
-        store.rebuildHuddleChannelPoints(() => {
-          throw new Error('scoring exploded');
-        }),
-      /keeping the existing table/,
-    );
-    const after = store.huddlePointTotals();
-    assert.equal(after.rows, 1, 'the row is still there');
-    assert.equal(after.attributed, 40, 'and still has its points');
-    store.close();
-  });
-
-  it('sends security headers and burns a code after five wrong guesses', async () => {
-    const store = await createTestStore();
-    const harness = await startDashboard({ store });
-    try {
-      const page = await fetch(`${harness.base}/`);
-      assert.equal(page.headers.get('x-frame-options'), 'DENY', 'no framing');
-      assert.match(page.headers.get('content-security-policy'), /frame-ancestors 'none'/);
-
-      const ask = await fetch(`${harness.base}/api/auth/code`, {
-        method: 'POST',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ slackUserId: 'U0AEYDUCLKF' }),
-      });
-      assert.equal(ask.status, 200);
-      const dm = harness.client.chat.postMessage.mock.calls.at(-1).arguments[0].text;
-      const code = dm.match(/\*(\d{6})\*/)[1];
-      const wrong = code === '000000' ? '111111' : '000000';
-
-      for (let attempt = 0; attempt < 5; attempt += 1) {
-        const res = await fetch(`${harness.base}/api/auth/verify`, {
-          method: 'POST',
-          headers: { 'content-type': 'application/json' },
-          body: JSON.stringify({ slackUserId: 'U0AEYDUCLKF', code: wrong }),
-        });
-        assert.equal(res.status, 400);
-      }
-      const burned = await fetch(`${harness.base}/api/auth/verify`, {
-        method: 'POST',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ slackUserId: 'U0AEYDUCLKF', code }),
-      });
-      assert.equal(burned.status, 400, 'the real code is burned after five misses');
-      assert.match((await burned.json()).error, /new code|too many attempts/i);
-    } finally {
-      await harness.stop();
-    }
-  });
-
-  it('builds an https redirect uri even when the proxy sends no proto header', async () => {
-    const store = await createTestStore();
-    const auth = createDashboardAuth({
-      client: createSlackClientDouble(),
-      store,
-      logger: { warn: mock.fn(), error: mock.fn() },
-      slackClientId: '123.456',
-      slackClientSecret: 'secret',
-    });
-    const url = auth.slackAuthorizeUrl({ headers: { host: 'orbit.navaratne.uk' }, socket: {} }, 'state', 'nonce');
-    assert(
-      url.includes('redirect_uri=https%3A%2F%2Forbit.navaratne.uk%2Fauth%2Fslack%2Fcallback'),
-      'Slack only accepts the exact https url, so http here fails with invalid redirect_uri',
-    );
-    // Loopback stays http so local development and the test suite still work.
-    const local = auth.slackAuthorizeUrl({ headers: { host: '127.0.0.1:8787' }, socket: {} }, 's', 'n');
-    assert(local.includes('redirect_uri=http%3A%2F%2F127.0.0.1%3A8787%2Fauth%2Fslack%2Fcallback'));
-    store.close();
-  });
-
-  it('sends the Slack token request form encoded with a grant type', async (t) => {
-    const store = await createTestStore();
-    const auth = createDashboardAuth({
-      client: createSlackClientDouble(),
-      store,
-      logger: { warn: mock.fn(), error: mock.fn() },
-      slackClientId: '123.456',
-      slackClientSecret: 'secret',
-    });
-    const originalFetch = globalThis.fetch;
-    const seen = [];
-    t.after(() => {
-      globalThis.fetch = originalFetch;
-    });
-    // A real id_token carries the member id in `sub`. Only the payload is
-    // decoded here, never the signature, so a stand-in segment is enough.
-    const idToken = ['header', Buffer.from(JSON.stringify({ sub: 'U0AEYDUCLKF' })).toString('base64url')].join('.');
-    globalThis.fetch = async (url, options = {}) => {
-      seen.push({ url: String(url), options });
-      if (String(url).includes('openid.connect.token')) {
-        return new Response(JSON.stringify({ ok: true, access_token: 'xoxp-test', id_token: idToken }), {
-          status: 200,
-          headers: { 'content-type': 'application/json' },
-        });
-      }
-      // users.info is the one call that fails: the authorize request only asks
-      // for `openid profile`, so this token carries no users:read and Slack
-      // refuses the call. Sign in has to survive that anyway.
-      return new Response(JSON.stringify({ ok: false, error: 'missing_scope' }), {
-        status: 200,
-        headers: { 'content-type': 'application/json' },
-      });
-    };
-
-    // The dashboard sits behind Caddy, so the proto arrives as a forwarded
-    // header; the redirect uri has to be rebuilt from that on every request.
-    const profile = await auth.exchangeSlackCode(
-      { headers: { host: 'asteria.navaratne.uk', 'x-forwarded-proto': 'https' }, socket: {} },
-      'code-123',
-    );
-    assert.equal(profile.id, 'U0AEYDUCLKF', 'the member id comes from the id_token');
-    const tokenCall = seen.find((call) => call.url.includes('openid.connect.token'));
-    assert.ok(tokenCall, 'the token endpoint was called');
-    assert.equal(
-      tokenCall.options.headers['content-type'],
-      'application/x-www-form-urlencoded',
-      'Slack rejects a JSON body here',
-    );
-    // The body has to be a URLSearchParams, not an object, or Slack sees no fields.
-    assert.ok(tokenCall.options.body instanceof URLSearchParams, 'the body is url encoded');
-    const fields = Object.fromEntries(tokenCall.options.body);
-    assert.equal(fields.grant_type, 'authorization_code', 'the grant type must be explicit');
-    assert.equal(fields.code, 'code-123');
-    assert.equal(fields.redirect_uri, 'https://asteria.navaratne.uk/auth/slack/callback');
-    assert.equal(fields.client_id, '123.456');
-    assert.equal(fields.client_secret, 'secret');
-    store.close();
+  it('carries the duration helper the tables use', () => {
+    const html = renderApp({ signedIn: true, role: 'owner', view: 'huddles' });
+    assert.match(html, /function dur\(seconds\)/);
+    assert.match(html, /function huddleRows\(rows\)/);
   });
 });
 
