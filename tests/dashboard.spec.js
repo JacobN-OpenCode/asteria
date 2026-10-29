@@ -878,6 +878,44 @@ describe('dashboard markup', () => {
     store.close();
   });
 
+  it('sends security headers and burns a code after five wrong guesses', async () => {
+    const store = await createTestStore();
+    const harness = await startDashboard({ store });
+    try {
+      const page = await fetch(`${harness.base}/`);
+      assert.equal(page.headers.get('x-frame-options'), 'DENY', 'no framing');
+      assert.match(page.headers.get('content-security-policy'), /frame-ancestors 'none'/);
+
+      const ask = await fetch(`${harness.base}/api/auth/code`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ slackUserId: 'U0AEYDUCLKF' }),
+      });
+      assert.equal(ask.status, 200);
+      const dm = harness.client.chat.postMessage.mock.calls.at(-1).arguments[0].text;
+      const code = dm.match(/\*(\d{6})\*/)[1];
+      const wrong = code === '000000' ? '111111' : '000000';
+
+      for (let attempt = 0; attempt < 5; attempt += 1) {
+        const res = await fetch(`${harness.base}/api/auth/verify`, {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ slackUserId: 'U0AEYDUCLKF', code: wrong }),
+        });
+        assert.equal(res.status, 400);
+      }
+      const burned = await fetch(`${harness.base}/api/auth/verify`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ slackUserId: 'U0AEYDUCLKF', code }),
+      });
+      assert.equal(burned.status, 400, 'the real code is burned after five misses');
+      assert.match((await burned.json()).error, /new code|too many attempts/i);
+    } finally {
+      await harness.stop();
+    }
+  });
+
   it('builds an https redirect uri even when the proxy sends no proto header', async () => {
     const store = await createTestStore();
     const auth = createDashboardAuth({

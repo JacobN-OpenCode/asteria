@@ -62,6 +62,10 @@ export function createDashboardServer({
   // Two tabs open at once used to trigger two identical builds, each asking
   // Slack the same questions. Share the build that is already running.
   const statsBuilds = new Map();
+  // A member can post a recap, but not fifty of them in a minute.
+  const recapPosts = new Map();
+  const RECAP_LIMIT = 10;
+  const RECAP_WINDOW_MS = 60 * 60 * 1000;
   const INFO_TTL_MS = 10 * 60 * 1000;
   const cachedInfo = async (channelId, compute) => {
     const hit = infoCache.get(channelId);
@@ -170,6 +174,7 @@ export function createDashboardServer({
     res.writeHead(statusCode, {
       'content-type': 'application/json; charset=utf-8',
       'cache-control': 'no-store',
+      'x-content-type-options': 'nosniff',
       ...extraHeaders,
     });
     res.end(payload);
@@ -180,9 +185,10 @@ export function createDashboardServer({
       'content-type': 'text/html; charset=utf-8',
       'cache-control': 'no-store',
       'x-content-type-options': 'nosniff',
+      'x-frame-options': 'DENY',
       'referrer-policy': 'same-origin',
       'content-security-policy':
-        "default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'; img-src https: data:; connect-src 'self'; form-action 'self'; base-uri 'none'",
+        "default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'; img-src https: data:; connect-src 'self'; form-action 'self'; base-uri 'none'; frame-ancestors 'none'",
     });
     res.end(html);
   }
@@ -262,6 +268,11 @@ export function createDashboardServer({
   function safeNextRoute(value) {
     const next = String(value || '');
     if (!next || !next.startsWith('/') || next.startsWith('//')) {
+      return '';
+    }
+    // Browsers treat `/\evil.example` in a Location header as protocol relative,
+    // and control characters do not belong in a path at all.
+    if (next.includes('\\') || /[\u0000-\u001f\u007f]/.test(next)) {
       return '';
     }
     return next;
@@ -935,6 +946,15 @@ people who were in the huddle.</p></div></body></html>`;
         sendJson(res, 400, { error: 'Tick the policy box first' });
         return;
       }
+      const recapKey = `${auth_.session.slack_user_id}:${channelId}`;
+      const nowMs = Date.now();
+      const recent = (recapPosts.get(recapKey) || []).filter((at) => nowMs - at < RECAP_WINDOW_MS);
+      if (recent.length >= RECAP_LIMIT) {
+        sendJson(res, 429, { error: 'That is a lot of recaps. Try again later.' });
+        return;
+      }
+      recent.push(nowMs);
+      recapPosts.set(recapKey, recent);
       if (!text) {
         sendJson(res, 400, { error: 'Write something first' });
         return;
